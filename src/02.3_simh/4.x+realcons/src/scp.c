@@ -10537,7 +10537,8 @@ for (i=0; i<sim_brk_lnt; i++) {
         bp = bpt;
         }
     }
-memset (sim_brk_tab, 0, sim_brk_lnt*sizeof (BRKTAB*));
+if (sim_brk_lnt != 0)
+    memset (sim_brk_tab, 0, sim_brk_lnt*sizeof (BRKTAB*));
 sim_brk_lnt = SIM_BRK_INILNT;
 sim_brk_tab = (BRKTAB **) realloc (sim_brk_tab, sim_brk_lnt*sizeof (BRKTAB*));
 if (sim_brk_tab == NULL)

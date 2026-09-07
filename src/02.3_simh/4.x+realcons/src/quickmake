@@ -2,7 +2,8 @@
 #
 # Config
 #
-USE_NETWORK=1
+USE_NETWORK ?= 1
+USE_VIDEO ?= 1
 USE_REALCONS=1
 
 
@@ -14,9 +15,9 @@ BLINKENLIGHT_API_DIR=$(SRC)/../../../07.0_blinkenlight_api/
 REALCONS_DIR=$(SRC)/REALCONS/
 DISPLAY=$(SRC)/display/
 
-BIN=$(SRC)/../bin-rpi/
+BIN ?= $(SRC)/../bin-rpi/
 #LIBPCAP=$(SRC)/../rpi-build/libpcap.a
-LIBPCAP=-lpcap
+LIBPCAP ?= -lpcap
 
 # sources ------------------------------------------------------------------------------
 
@@ -39,7 +40,7 @@ PDP11 = ${PDP11D}/pdp11_fp.c ${PDP11D}/pdp11_cpu.c ${PDP11D}/pdp11_dz.c \
 	${PDP11D}/pdp11_ke.c ${PDP11D}/pdp11_dc.c ${PDP11D}/pdp11_dmc.c \
 	${PDP11D}/pdp11_kmc.c ${PDP11D}/pdp11_dup.c ${PDP11D}/pdp11_rs.c \
 	${PDP11D}/pdp11_vt.c ${PDP11D}/pdp11_td.c ${PDP11D}/pdp11_io_lib.c \
-	$(DISPLAY)/display.c $(DISPLAY)/sim_ws.c $(DISPLAY)/vt11.c
+	$(DISPLAY_SRCS)
 
 REALCONS= \
         $(REALCONS_DIR)realcons.c     \
@@ -55,10 +56,10 @@ REALCONS_PDP11= \
 	    $(REALCONS_DIR)realcons_console_pdp11_40.c \
 	    $(REALCONS_DIR)realcons_console_pdp11_70.c
 
-ALLSRCS = $(REALCONS) $(REALCONS_PDP11) $(SIM) $(PDP11)
+ALLSRCS = $(PDP11) $(SIM) $(REALCONS) $(REALCONS_PDP11) $(NETWORK_SRCS)
 
 OBJS := ${ALLSRCS:c=o}
-PROG := ${BIN}pdp11_realcons
+PROG = $(patsubst %/,%,$(BIN))/pdp11_realcons${EXE}
 
 
 # options ---------------------------------------------------------------------
@@ -72,15 +73,26 @@ REALCONS_OPT=-DUSE_REALCONS \
 
 PDP11_OPT = -DVM_PDP11 -I ${PDP11D} ${NETWORK_OPT} $(DISPLAY_OPT) ${REALCONS_OPT}
 
-NETWORK_OPT = -DUSE_NETWORK -isystem $(SYSROOTS)/usr/local/include $(LIBPCAP) -DHAVE_PCAP_NETWORK -DHAVE_TAP_NETWORK
-
-NETWORK_OPT += -Islirp -Islirp_glue -Islirp_glue/qemu -DHAVE_SLIRP_NETWORK -DUSE_SIMH_SLIRP_DEBUG slirp/*.c slirp_glue/*.c
+ifeq ($(USE_NETWORK),1)
+NETWORK_OPT = -DUSE_NETWORK -DHAVE_PCAP_NETWORK -DHAVE_TAP_NETWORK
+NETWORK_OPT += -Islirp -Islirp_glue -Islirp_glue/qemu -DHAVE_SLIRP_NETWORK -DUSE_SIMH_SLIRP_DEBUG
+NETWORK_SRCS = $(wildcard slirp/*.c slirp_glue/*.c)
+NETWORK_LDLIBS = $(LIBPCAP)
+endif
 
 CC_DEFS =
 OS_CCDEFS = -D_GNU_SOURCE
-CC_DBG_FLAGS = -O2 -Wno-unused-result
-LDFLAGS = -lrt -lm  -lpthread -ldl -lreadline -ltirpc -ldbus-1
-CC = gcc -std=c99 -U__STRICT_ANSI__  $(CC_DEFS) $(OS_CCDEFS) -I $(SRC) $(CC_DBG_FLAGS) -UUSE_REALCONS -I/usr/include/tirpc
+ifneq ($(filter default undefined,$(origin CFLAGS)),)
+CFLAGS = -O2 -Wno-unused-result
+endif
+SIM_LDLIBS = -lrt -lm -lpthread -ldl -lreadline -ltirpc -ldbus-1
+ifeq ($(origin CC),default)
+CC = gcc
+endif
+CC ?= gcc
+PKG_CONFIG ?= pkg-config
+TIRPC_CFLAGS ?= $(shell command -v $(PKG_CONFIG) >/dev/null 2>&1 && $(PKG_CONFIG) --cflags libtirpc 2>/dev/null)
+SIM_CPPFLAGS = -U__STRICT_ANSI__ $(CC_DEFS) $(OS_CCDEFS) -I $(SRC) $(TIRPC_CFLAGS) -UUSE_REALCONS
 CC_OUTSPEC = -o $@
 
 
@@ -90,17 +102,20 @@ find_exe = $(abspath $(strip $(firstword $(foreach dir,$(strip $(subst :, ,$(PAT
 find_lib = $(abspath $(strip $(firstword $(foreach dir,$(strip $(LIBPATH)),$(wildcard $(dir)/lib$(1).$(LIBEXT))))))
 find_include = $(abspath $(strip $(firstword $(foreach dir,$(strip $(INCPATH)),$(wildcard $(dir)/$(1).h)))))
 
+ifeq ($(USE_VIDEO),1)
 VIDEO_CCDEFS += -DHAVE_LIBSDL -DUSE_SIM_VIDEO `sdl2-config --cflags`
-VIDEO_LDFLAGS += `sdl2-config --libs`
+VIDEO_LDLIBS = `sdl2-config --libs`
 VIDEO_FEATURES = - video capabilities provided by libSDL2 (Simple Directmedia Layer)
-DISPLAY_OPT += -DUSE_DISPLAY $(VIDEO_CCDEFS) $(VIDEO_LDFLAGS)
+DISPLAY_OPT += -DUSE_DISPLAY $(VIDEO_CCDEFS)
+DISPLAY_SRCS = $(DISPLAY)/display.c $(DISPLAY)/sim_ws.c $(DISPLAY)/vt11.c
 $(info using libSDL2: $(call find_include,SDL2/SDL))
 VIDEO_CCDEFS += -DSDL_MAIN_AVAILABLE
+endif
 
 
 # MKDIRBIN cmd used by SimH 4.x rules
 #ifneq (binexists,$(shell if $(TEST) -e $(BIN); then echo binexists; fi))
-    MKDIRBIN = mkdir -p $(BIN)
+    MKDIRBIN = mkdir -p "$(BIN)"
 #endif
 
 
@@ -116,12 +131,16 @@ clean :
 	if exist BIN rmdir BIN
 #	rm -f $(OBJS)
 
-pdp11_realcons : ${BIN}pdp11_realcons${EXE}
+pdp11_realcons : $(PROG)
 
-${BIN}pdp11_realcons${EXE} : ${PDP11} ${SIM} $(REALCONS) $(REALCONS_PDP11)
+# force rebuild so flag and feature changes take effect
+.PHONY: FORCE
+FORCE:
+
+$(PROG) : FORCE $(ALLSRCS)
 	${MKDIRBIN}
-	${CC} ${PDP11} ${SIM} $(REALCONS) $(REALCONS_PDP11) ${PDP11_OPT} $(CC_OUTSPEC) ${LDFLAGS}
-	file ${BIN}pdp11_realcons${EXE}
+	${CC} -std=c99 $(SIM_CPPFLAGS) ${PDP11_OPT} $(CPPFLAGS) $(CFLAGS) $(ALLSRCS) $(LDFLAGS) $(NETWORK_LDLIBS) $(VIDEO_LDLIBS) $(SIM_LDLIBS) $(LDLIBS) ${CC_OUTSPEC}
+	file "$(PROG)"
 
 %.o : %.c 
-	${CC} ${PDP11_OPT} -c -o $@ $< 
+	${CC} -std=c99 $(SIM_CPPFLAGS) ${PDP11_OPT} $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
