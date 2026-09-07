@@ -2381,16 +2381,18 @@ if (((sim_dflt_dev->flags & DEV_DEBUG) == 0) &&         /* default device withou
 if (*argv[0]) {                                         /* sim name arg? */
     char *np;                                           /* "path.ini" */
 
-    strncpy (nbuf, argv[0], PATH_MAX + 1);              /* copy sim name */
-    if ((np = (char *)match_ext (nbuf, "EXE")))         /* remove .exe */
-        *np = 0;
-    np = strrchr (nbuf, '/');                           /* stript path and try again in cwd */
-    if (np == NULL)
-        np = strrchr (nbuf, '\\');                      /* windows path separator */
-    if (np == NULL)
-        np = strrchr (nbuf, ']');                       /* VMS path separator */
-    if (np != NULL)
-        setenv ("SIM_BIN_NAME", np+1, 1);               /* Publish simulator binary name */
+    if (strlen (argv[0]) < sizeof (nbuf)) {
+        strcpy (nbuf, argv[0]);                        /* copy sim name */
+        if ((np = (char *)match_ext (nbuf, "EXE")))     /* remove .exe */
+            *np = 0;
+        np = strrchr (nbuf, '/');                       /* stript path and try again in cwd */
+        if (np == NULL)
+            np = strrchr (nbuf, '\\');                  /* windows path separator */
+        if (np == NULL)
+            np = strrchr (nbuf, ']');                   /* VMS path separator */
+        if (np != NULL)
+            setenv ("SIM_BIN_NAME", np+1, 1);           /* Publish simulator binary name */
+        }
     setenv ("SIM_BIN_PATH", argv[0], 1);
     }
 sim_argv = argv;
@@ -2401,31 +2403,56 @@ if (cptr == NULL) {
     }
 else
     cptr2 = NULL;
-if (cptr && sizeof (nbuf) > strlen (cptr) + strlen ("/simh.ini") + 1) {
-    sprintf(nbuf, "\"%s%s%ssimh.ini\"", cptr2 ? cptr2 : "", cptr, strchr (cptr, '/') ? "/" : "\\");
-    stat = do_cmd (-1, nbuf) & ~SCPE_NOMESSAGE;         /* simh.ini proc cmd file */
+if (cptr) {
+    size_t home_len = strlen (cptr);
+    size_t drive_len = cptr2 ? strlen (cptr2) : 0;
+    size_t available = sizeof (nbuf) - sizeof ("\"/simh.ini\"");
+
+    if ((home_len > available) || (drive_len > available - home_len))
+        stat = sim_messagef (SCPE_ARG, "Simulator initialization path is too long\n");
+    else {
+        char *np = nbuf;
+
+        *np++ = '"';
+        if (drive_len) {
+            memcpy (np, cptr2, drive_len);
+            np += drive_len;
+            }
+        memcpy (np, cptr, home_len);
+        np += home_len;
+        *np++ = strchr (cptr, '/') ? '/' : '\\';
+        memcpy (np, "simh.ini\"", sizeof ("simh.ini\""));
+        stat = do_cmd (-1, nbuf) & ~SCPE_NOMESSAGE;     /* simh.ini proc cmd file */
+        }
     }
 if (stat == SCPE_OPENERR)
     stat = do_cmd (-1, "simh.ini");                     /* simh.ini proc cmd file */
 if (*cbuf)                                              /* cmd file arg? */
     stat = do_cmd (0, cbuf);                            /* proc cmd file */
 else if (*argv[0]) {                                    /* sim name arg? */
+    size_t sim_len = strlen (argv[0]);
     char *np;                                           /* "path.ini" */
-    nbuf[0] = '"';                                      /* starting " */
-    strncpy (nbuf + 1, argv[0], PATH_MAX + 1);          /* copy sim name */
-    if ((np = (char *)match_ext (nbuf, "EXE")))         /* remove .exe */
-        *np = 0;
-    strlcat (nbuf, ".ini\"", sizeof (nbuf));            /* add .ini" */
-    stat = do_cmd (-1, nbuf) & ~SCPE_NOMESSAGE;         /* proc default cmd file */
-    if (stat == SCPE_OPENERR) {                         /* didn't exist/can't open? */
-        np = strrchr (nbuf, '/');                       /* stript path and try again in cwd */
-        if (np == NULL)
-            np = strrchr (nbuf, '\\');                  /* windows path separator */
-        if (np == NULL)
-            np = strrchr (nbuf, ']');                   /* VMS path separator */
-        if (np != NULL) {
-            *np = '"';
-            stat = do_cmd (-1, np) & ~SCPE_NOMESSAGE;   /* proc default cmd file */
+
+    if (sim_len > sizeof (nbuf) - sizeof ("\".ini\""))
+        stat = sim_messagef (SCPE_ARG, "Simulator executable path is too long\n");
+    else {
+        nbuf[0] = '"';                                  /* starting " */
+        memcpy (nbuf + 1, argv[0], sim_len + 1);        /* copy sim name */
+        if ((np = (char *)match_ext (nbuf, "EXE")))     /* remove .exe */
+            *np = 0;
+        np = nbuf + strlen (nbuf);
+        memcpy (np, ".ini\"", sizeof (".ini\""));       /* add .ini" */
+        stat = do_cmd (-1, nbuf) & ~SCPE_NOMESSAGE;     /* proc default cmd file */
+        if (stat == SCPE_OPENERR) {                     /* didn't exist/can't open? */
+            np = strrchr (nbuf, '/');                   /* stript path and try again in cwd */
+            if (np == NULL)
+                np = strrchr (nbuf, '\\');              /* windows path separator */
+            if (np == NULL)
+                np = strrchr (nbuf, ']');               /* VMS path separator */
+            if (np != NULL) {
+                *np = '"';
+                stat = do_cmd (-1, np) & ~SCPE_NOMESSAGE; /* proc default cmd file */
+                }
             }
         }
     }
@@ -5733,14 +5760,17 @@ else {
 cptr = WholeName;
 #if defined (HAVE_GLOB)
 memset (&paths, 0, sizeof (paths));
-if (0 == glob (cptr, 0, NULL, &paths)) {
 #else
 dir = opendir(DirName[0] ? DirName : "/.");
 if (dir) {
     struct dirent *ent;
 #endif
     t_offset FileSize;
+#if defined (HAVE_GLOB)
     char FileName[PATH_MAX + 1];
+#else
+    char FileName[PATH_MAX + NAME_MAX + 2];             /* directory + '/' + name */
+#endif
     char *MatchName = 1 + strrchr (cptr, '/');;
     char *p_name;
     struct tm *local;
@@ -11275,8 +11305,6 @@ else {
     ep->match = match_buf;
     ep->size = match_size;
     }
-ep->match_pattern = (char *)malloc (strlen (match) + 1);
-strcpy (ep->match_pattern, match);
 if (ep->act) {                                          /* replace old action? */
     free (ep->act);                                     /* deallocate */
     ep->act = NULL;                                     /* now no action */
@@ -13000,7 +13028,6 @@ fp = sim_fopen (helpfile, "r");
 if (fp == NULL) {
     if (sim_argv && *sim_argv[0]) {
         char fbuf[(4*PATH_MAX)+1]; /* PATH_MAX is ridiculously small on some platforms */
-        const char *d = NULL;
 
         /* Try to find a path from argv[0].  This won't always
          * work (one reason files are probably not a good idea),
@@ -13015,18 +13042,15 @@ if (fp == NULL) {
             *p = '\0';
         if ((p = strrchr (fbuf, '\\'))) {
             p[1] = '\0';
-            d = "%s\\";
             }
         else {
             if ((p = strrchr (fbuf, '/'))) {
                 p[1] = '\0';
-                d = "%s/";
 #ifdef VMS
                 }
             else {
                 if ((p = strrchr (fbuf, ']'))) {
                     p[1] = '\0';
-                    d = "[%s]";
                     }
 #endif
                 }
@@ -13035,11 +13059,33 @@ if (fp == NULL) {
             strcat (fbuf, helpfile);
             fp = sim_fopen (fbuf, "r");
             }
-        if (!fp && p && (strlen (fbuf) + strlen (d) + sizeof ("help") +
-                          strlen (helpfile) +1) <= sizeof (fbuf)) {
-            sprintf (p+1, d, "help");
-            strcat (p+1, helpfile);
-            fp = sim_fopen (fbuf, "r");
+        if (!fp && p) {
+            size_t prefix_len = (size_t)(p - fbuf) + 1;
+            size_t help_len = strlen (helpfile);
+#ifdef VMS
+            if (*p == ']') {
+                const size_t help_dir_len = sizeof ("[help]") - 1;
+
+                if ((prefix_len <= sizeof (fbuf) - help_dir_len - 1) &&
+                    (help_len <= sizeof (fbuf) - prefix_len - help_dir_len - 1)) {
+                    memcpy (p + 1, "[help]", help_dir_len);
+                    memcpy (p + 1 + help_dir_len, helpfile, help_len + 1);
+                    fp = sim_fopen (fbuf, "r");
+                    }
+                }
+            else
+#endif
+            {
+                const size_t help_dir_len = sizeof ("help") - 1 + 1;
+
+                if ((prefix_len <= sizeof (fbuf) - help_dir_len - 1) &&
+                    (help_len <= sizeof (fbuf) - prefix_len - help_dir_len - 1)) {
+                    memcpy (p + 1, "help", sizeof ("help") - 1);
+                    p[sizeof ("help")] = *p;
+                    memcpy (p + sizeof ("help") + 1, helpfile, help_len + 1);
+                    fp = sim_fopen (fbuf, "r");
+                    }
+                }
             }
         }
     }

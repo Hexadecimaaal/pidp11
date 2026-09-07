@@ -38,6 +38,8 @@ stdenv.mkDerivation {
       (sourceFiles ./src/02.3_simh/4.x+realcons/src)
       ./src/02.3_simh/4.x+realcons/src/quickmake
       ./tests/headless.ini
+      ./tests/console.ini
+      ./tests/ether_bounds.c
     ];
   };
 
@@ -87,6 +89,18 @@ stdenv.mkDerivation {
       *HEADLESS_SMOKE_PASSED*) ;;
       *) echo "Headless instruction smoke check did not complete" >&2; exit 1 ;;
     esac
+    "$out/bin/pdp11_realcons" -e tests/console.ini > console.log 2>&1 || {
+      cat console.log
+      exit 1
+    }
+    case "$(cat console.log)" in
+      *CONSOLE_SMOKE_PASSED*) ;;
+      *) cat console.log; echo "Console smoke check did not complete" >&2; exit 1 ;;
+    esac
+    $CC -std=c99 -D_GNU_SOURCE -ffunction-sections -fdata-sections \
+      ${lib.optionalString enableSanitizers "-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"} \
+      tests/ether_bounds.c -Wl,--gc-sections -o ether-bounds
+    ./ether-bounds
     runHook postInstallCheck
   '';
 

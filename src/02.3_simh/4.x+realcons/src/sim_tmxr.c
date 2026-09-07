@@ -515,7 +515,7 @@ memset (lp->rbr, 0, lp->rxbsz);                         /* clear break status ar
 static void tmxr_report_connection (TMXR *mp, TMLN *lp)
 {
 int32 unwritten, psave;
-char cmsg[80];
+char cmsg[sizeof(sim_name) + sizeof("\n\r\nConnected to the ") + sizeof(" simulator ") - 2];
 char dmsg[80] = "";
 char lmsg[80] = "";
 char msgbuf[256] = "";
@@ -1203,8 +1203,10 @@ for (i = 0; i < mp->lines; i++) {                       /* check each line in se
 
                             if (sim_parse_addr (lp->destination, host, sizeof(host), NULL, NULL, 0, NULL, address)) {
                                 tmxr_msg (newsock, "Rejecting connection from unexpected source\r\n");
-                                sprintf (msg, "tmxr_poll_conn() - Rejecting line connection from: %s, Expected: %s", address, host);
-                                tmxr_debug_connect_line (lp, msg);
+                                if (lp->mp)
+                                    sim_debug (TMXR_DBG_CON, lp->mp->dptr,
+                                               "Ln%d:tmxr_poll_conn() - Rejecting line connection from: %s, Expected: %s\n",
+                                               (int)(lp - lp->mp->ldsc), address, host);
                                 sim_close_sock (newsock);
                                 free (address);
                                 continue;                           /* Try for another connection */

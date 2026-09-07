@@ -2519,11 +2519,14 @@ while (*cptr != 0) {                                    /* do all mods */
         if (serport != INVALID_HANDLE) {
             sim_close_serial (serport);
             if (r == SCPE_OK) {
-                char cbuf[CBUFSIZE];
+                char cbuf[sizeof(gbuf) + sizeof("Connect=") - 1];
+                int n;
                 if ((sim_con_tmxr.master) ||            /* already open? */
                     (sim_con_ldsc.serport))
                     sim_set_noserial (0, NULL);         /* close first */
-                sprintf(cbuf, "Connect=%s", gbuf);
+                n = snprintf (cbuf, sizeof (cbuf), "Connect=%s", gbuf);
+                if ((n < 0) || ((size_t)n >= sizeof (cbuf)))
+                    return SCPE_ARG;
                 r = tmxr_attach (&sim_con_tmxr, &sim_con_unit, cbuf);/* open master socket */
                 sim_con_ldsc.rcve = 1;                  /* rcv enabled */
                 if (r == SCPE_OK)
@@ -4083,25 +4086,52 @@ if (flag == 0)                                              /* no halt? */
 else {
     char *mbuf;
     char *mbuf2;
+    size_t len;
+    size_t mbuf2_size;
+    int n;
+    t_stat r;
 
     if (cptr == NULL || *cptr == 0)                         /* no match string? */
         return SCPE_2FARG;                                  /* need an argument */
 
-    sim_exp_clrall (&sim_con_expect);                       /* make sure that none currently exist */
+    len = strlen (cptr);
+    if (len > (size_t)-1 - 3)
+        return SCPE_MEM;
+    mbuf2_size = len + 3;
 
-    mbuf = (char *)malloc (1 + strlen (cptr));
+    mbuf = (char *)malloc (len + 1);
+    if (mbuf == NULL)
+        return SCPE_MEM;
     decode (mbuf, cptr);                                    /* save decoded match string */
 
-    mbuf2 = (char *)malloc (3 + strlen(cptr));
-    sprintf (mbuf2, "%s%s%s", (sim_switches & SWMASK ('A')) ? "\n" : "",
-                              mbuf, 
-                              (sim_switches & SWMASK ('I')) ? "" : "\n");
+    mbuf2 = (char *)malloc (mbuf2_size);
+    if (mbuf2 == NULL) {
+        free (mbuf);
+        return SCPE_MEM;
+        }
+    n = snprintf (mbuf2, mbuf2_size, "%s%s%s",
+                  (sim_switches & SWMASK ('A')) ? "\n" : "",
+                  mbuf,
+                  (sim_switches & SWMASK ('I')) ? "" : "\n");
+    if ((n < 0) || ((size_t)n >= mbuf2_size)) {
+        free (mbuf);
+        free (mbuf2);
+        return SCPE_ARG;
+        }
     free (mbuf);
-    mbuf = sim_encode_quoted_string ((uint8 *)mbuf2, strlen (mbuf2));
-    sim_switches = EXP_TYP_PERSIST;
-    sim_set_expect (&sim_con_expect, mbuf);
-    free (mbuf);
+    mbuf = sim_encode_quoted_string ((uint8 *)mbuf2, (uint32)n);
     free (mbuf2);
+    if (mbuf == NULL)
+        return SCPE_MEM;
+    if (strlen (mbuf) >= CBUFSIZE) {
+        free (mbuf);
+        return SCPE_ARG;                                    /* encoded match must fit the expect parser */
+        }
+    sim_exp_clrall (&sim_con_expect);                       /* make sure that none currently exist */
+    sim_switches = EXP_TYP_PERSIST;
+    r = sim_set_expect (&sim_con_expect, mbuf);
+    free (mbuf);
+    return r;
     }
 
 return SCPE_OK;

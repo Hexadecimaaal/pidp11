@@ -946,37 +946,45 @@ int ports = 0;
 memset(list, 0, max*sizeof(*list));
 #if defined(__linux) || defined(__linux__)
 if (1) {
-    struct dirent **namelist;
+    struct dirent **namelist = NULL;
     struct stat st;
 
     i = scandir("/sys/class/tty/", &namelist, NULL, NULL);
+    if (i >= 0) {
+        while (i--) {
+            if (strcmp(namelist[i]->d_name, ".") &&
+                strcmp(namelist[i]->d_name, "..")) {
+                char path[1024], devicepath[1024], driverpath[1024];
 
-    while (i--) {
-        if (strcmp(namelist[i]->d_name, ".") &&
-            strcmp(namelist[i]->d_name, "..")) {
-            char path[1024], devicepath[1024], driverpath[1024];
+                sprintf (path, "/sys/class/tty/%s", namelist[i]->d_name);
+                sprintf (devicepath, "/sys/class/tty/%s/device", namelist[i]->d_name);
+                sprintf (driverpath, "/sys/class/tty/%s/device/driver", namelist[i]->d_name);
+                if ((lstat(devicepath, &st) == 0) && S_ISLNK(st.st_mode)) {
+                    char buffer[1024];
 
-            sprintf (path, "/sys/class/tty/%s", namelist[i]->d_name);
-            sprintf (devicepath, "/sys/class/tty/%s/device", namelist[i]->d_name);
-            sprintf (driverpath, "/sys/class/tty/%s/device/driver", namelist[i]->d_name);
-            if ((lstat(devicepath, &st) == 0) && S_ISLNK(st.st_mode)) {
-                char buffer[1024];
+                    memset (buffer, 0, sizeof(buffer));
+                    if (readlink(driverpath, buffer, sizeof(buffer)) > 0) {
+                        if (ports < max) {
+                            const char *name = basename (path);
+                            int n = snprintf (list[ports].name, sizeof (list[ports].name),
+                                              "/dev/%s", name);
 
-                memset (buffer, 0, sizeof(buffer));
-                if (readlink(driverpath, buffer, sizeof(buffer)) > 0) {
-                    sprintf (list[ports].name, "/dev/%s", basename (path));
-                    port = open (list[ports].name, O_RDWR | O_NOCTTY | O_NONBLOCK);     /* open the port */
-                    if (port != -1) {                   /* open OK? */
-                        if (isatty (port))              /* is device a TTY? */
-                            ++ports;
-                        close (port);
+                            if ((n >= 0) && ((size_t)n < sizeof (list[ports].name))) {
+                                port = open (list[ports].name, O_RDWR | O_NOCTTY | O_NONBLOCK);     /* open the port */
+                                if (port != -1) {                   /* open OK? */
+                                    if (isatty (port))              /* is device a TTY? */
+                                        ++ports;
+                                    close (port);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
+            free (namelist[i]);
             }
-        free (namelist[i]);
+        free (namelist);
         }
-    free (namelist);
     }
 #elif defined(__hpux)
 for (i=0; (ports < max) && (i < 64); ++i) {

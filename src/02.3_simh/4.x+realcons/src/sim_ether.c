@@ -1555,6 +1555,63 @@ static int pcap_mac_if_vms(const char *AdapterName, unsigned char MACAddress[6])
 }
 #endif /* defined (__VMS) && !defined(__VAX) */
 
+#if !defined(_WIN32) && !defined(__CYGWIN__) && !defined(__VMS)
+static int eth_build_nic_hw_addr_command(char *command, size_t command_size,
+                                         const char *devname, const char *pattern)
+{
+  const char *command_prefix = "ifconfig '";
+  const char *command_separator = "' | ";
+  const char *command_suffix = "  >NIC.hwaddr";
+  const size_t prefix_len = sizeof("ifconfig '") - 1;
+  const size_t separator_len = sizeof("' | ") - 1;
+  const size_t suffix_len = sizeof("  >NIC.hwaddr") - 1;
+  const char *p;
+  size_t pattern_len;
+  size_t command_len;
+  size_t available;
+
+  if (!command || !command_size || !devname || !devname[0]
+      || (devname[0] == '-') || !pattern)
+    return 0;
+  if (prefix_len > command_size)
+    return 0;
+  pattern_len = strlen(pattern);
+  if (separator_len > command_size - prefix_len)
+    return 0;
+  available = command_size - prefix_len - separator_len;
+  if (pattern_len > available)
+    return 0;
+  available -= pattern_len;
+  if (suffix_len + 1 > available)
+    return 0;
+  available -= suffix_len + 1;
+  for (p = devname; *p; ++p) {
+    size_t char_len = (*p == '\'') ? 4 : 1;
+
+    if (char_len > available)
+      return 0;
+    available -= char_len;
+    }
+
+  command_len = prefix_len;
+  memcpy(command, command_prefix, prefix_len);
+  for (p = devname; *p; ++p) {
+    if (*p == '\'') {
+      memcpy(command + command_len, "'\\''", 4);
+      command_len += 4;
+      }
+    else
+      command[command_len++] = *p;
+    }
+  memcpy(command + command_len, command_separator, separator_len);
+  command_len += separator_len;
+  memcpy(command + command_len, pattern, pattern_len);
+  command_len += pattern_len;
+  memcpy(command + command_len, command_suffix, suffix_len + 1);
+  return 1;
+}
+#endif
+
 static void eth_get_nic_hw_addr(ETH_DEV* dev, const char *devname)
 {
   memset(&dev->host_nic_phy_hw_addr, 0, sizeof(dev->host_nic_phy_hw_addr));
@@ -1576,10 +1633,11 @@ static void eth_get_nic_hw_addr(ETH_DEV* dev, const char *devname)
         "grep [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]",
         "egrep [0-9a-fA-F]?[0-9a-fA-F]:[0-9a-fA-F]?[0-9a-fA-F]:[0-9a-fA-F]?[0-9a-fA-F]:[0-9a-fA-F]?[0-9a-fA-F]:[0-9a-fA-F]?[0-9a-fA-F]:[0-9a-fA-F]?[0-9a-fA-F]",
         NULL};
-
-    memset(command, 0, sizeof(command));
+    /* keep the optional lookup from interpreting device names as shell syntax
+       or ifconfig options, and leave the address unavailable if they do not fit. */
     for (i=0; patterns[i] && (0 == dev->have_host_nic_phy_addr); ++i) {
-      snprintf(command, sizeof(command)-1, "ifconfig %s | %s  >NIC.hwaddr", devname, patterns[i]);
+      if (!eth_build_nic_hw_addr_command(command, sizeof(command), devname, patterns[i]))
+        return;
       (void)system(command);
       if (NULL != (f = fopen("NIC.hwaddr", "r"))) {
         while (0 == dev->have_host_nic_phy_addr) {
