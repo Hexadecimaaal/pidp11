@@ -3,6 +3,22 @@
 # call with MAKE_TARGET_ARCH=X86 or =RPI
 
 
+GPIO_BACKEND ?= rpi
+
+ifeq ($(GPIO_BACKEND),v2)
+.DEFAULT_GOAL := all
+OBJDIR = bin-gpio-v2
+CFLAGS ?= -g -O2
+CCDEFS = \
+	-std=c11 -D_GNU_SOURCE -DBLINKENLIGHT_SERVER -DPIDP_GPIO_V2 \
+	-I. \
+	-I$(BLINKENLIGHT_COMMON_DIR) \
+	-I$(BLINKENLIGHT_API_DIR) \
+	-I$(BLINKENLIGHT_API_DIR)/rpcgen_linux \
+	-I$(BLINKENLIGHT_SERVER_DIR) \
+	-I/usr/include/tirpc
+LDLIBS += -pthread -lrt -ltirpc
+else
 #
 # CC Command
 #
@@ -43,6 +59,7 @@ CCDEFS= \
 	-I$(BLINKENLIGHT_SERVER_DIR)	\
 	-I/usr/include/tirpc	\
 	$(CC_DBG_FLAGS) $(OS_CCDEFS)
+endif
 
 
 BLINKENLIGHT_COMMON_DIR=../../00_common
@@ -78,6 +95,18 @@ $(BLINKENLIGHT_API_SOURCES.c) $(BLINKENLIGHT_API_SOURCES.h):
 
 #########################################################
 
+ifeq ($(GPIO_BACKEND),v2)
+SOURCES.h = \
+	main.h gpio.h gpio_linux.h gpio_scan.h gpio_v2.h gpiopattern.h \
+	$(BLINKENLIGHT_SERVER_DIR)/print.h \
+	$(BLINKENLIGHT_API_DIR)/blinkenlight_panels.h \
+	$(BLINKENLIGHT_API_SOURCES.h)
+
+SOURCES.c = \
+	main.c gpiopattern.c gpio_linux.c gpio_scan.c gpio_v2.c \
+	$(BLINKENLIGHT_SERVER_DIR)/print.c \
+	$(BLINKENLIGHT_API_SOURCES.c)
+else
 SOURCES.h = \
 	main.h	\
 	gpio.h	\
@@ -94,9 +123,21 @@ SOURCES.c = \
 	$(BLINKENLIGHT_API_SOURCES.c)	\
 	pinctrl/gpiochip_bcm2712.c  pinctrl/gpiochip_rp1.c  pinctrl/util.c \
 	pinctrl/gpiochip_bcm2835.c  pinctrl/gpiolib.c       pinctrl/pinctrl.c
+endif
 
 
 
+ifeq ($(GPIO_BACKEND),v2)
+.PHONY: all clean
+all: $(OBJDIR)/pidp1170_blinkenlightd-v2
+
+clean:
+	rm -f $(OBJDIR)/pidp1170_blinkenlightd-v2
+
+$(OBJDIR)/pidp1170_blinkenlightd-v2: $(SOURCES.c) $(SOURCES.h)
+	mkdir -p $(OBJDIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CCDEFS) $(SOURCES.c) $(LDFLAGS) $(LDLIBS) -o $@
+else
 OBJECTS = $(SOURCES.c:%.c=%.o)
 #
 # Build everything
@@ -126,3 +167,4 @@ pidp1170_blinkenlightd:	$(SOURCES.c) $(SOURCES.h)
 	# Verify: was it x86 or ARM?
 	file $(OBJDIR)/$@
 
+endif

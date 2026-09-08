@@ -18,6 +18,17 @@ struct pidp_gpio_v2_mapping {
   uint32_t offsets[PIDP_GPIO_V2_LINES];
 };
 
+/* parse exactly 21 distinct comma-separated decimal uint32 offsets without
+ * signs, whitespace, or other characters. chip_path must be nonempty and is
+ * borrowed: keep it valid while using the mapping. offsets_text is consumed
+ * only during this call. no allocation or gpio access is performed.
+ * returns zero on success, or -1 with errno set to EINVAL for null arguments,
+ * an empty chip path, malformed text, wrong count, or duplicate offsets;
+ * ERANGE denotes uint32 overflow. the output is unchanged on any failure.
+ */
+int pidp_gpio_v2_parse_mapping(struct pidp_gpio_v2_mapping *mapping,
+    const char *chip_path, const char *offsets_text);
+
 /* callbacks follow the corresponding posix syscall return/errno convention.
  * ioctl callbacks return zero on success. context must outlive the backend;
  * the operations themselves are copied. null ops selects all posix syscalls;

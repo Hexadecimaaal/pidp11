@@ -150,6 +150,50 @@ static int valid_mapping(const struct pidp_gpio_v2_mapping *mapping)
   return 0;
 }
 
+int pidp_gpio_v2_parse_mapping(struct pidp_gpio_v2_mapping *mapping,
+    const char *chip_path, const char *offsets_text)
+{
+  struct pidp_gpio_v2_mapping parsed = {0};
+  const char *cursor = offsets_text;
+  unsigned int i;
+  int error;
+
+  if (mapping == NULL || chip_path == NULL || chip_path[0] == '\0'
+      || offsets_text == NULL)
+    return fail_return(EINVAL);
+
+  parsed.chip_path = chip_path;
+  for (i = 0; i < PIDP_GPIO_V2_LINES; ++i) {
+    uint32_t value = 0;
+
+    if (*cursor < '0' || *cursor > '9')
+      return fail_return(EINVAL);
+    do {
+      uint32_t digit = (uint32_t)(*cursor - '0');
+
+      if (value > (UINT32_MAX - digit) / UINT32_C(10))
+        return fail_return(ERANGE);
+      value = value * UINT32_C(10) + digit;
+      ++cursor;
+    } while (*cursor >= '0' && *cursor <= '9');
+    parsed.offsets[i] = value;
+    if (i + 1 == PIDP_GPIO_V2_LINES) {
+      if (*cursor != '\0')
+        return fail_return(EINVAL);
+    } else {
+      if (*cursor != ',')
+        return fail_return(EINVAL);
+      ++cursor;
+    }
+  }
+
+  error = valid_mapping(&parsed);
+  if (error != 0)
+    return fail_return(error);
+  *mapping = parsed;
+  return 0;
+}
+
 static int add_attribute(struct gpio_v2_line_config *config, __u32 id,
     __u64 value, __u64 mask)
 {

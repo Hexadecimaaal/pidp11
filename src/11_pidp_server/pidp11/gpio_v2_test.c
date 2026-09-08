@@ -37,6 +37,8 @@ struct fake_transport {
   struct gpio_v2_line_values values[TEST_MAX_IOCTLS];
   uint32_t chip_lines;
   uint64_t input_bits;
+  unsigned int fail_open_call;
+  int fail_open_errno;
   unsigned int fail_ioctl_call;
   int fail_ioctl_errno;
   unsigned int fail_close_call;
@@ -61,6 +63,11 @@ static int fake_open(void *context, const char *path, int flags)
     return -1;
   }
   ++fake->open_calls;
+  if (fake->fail_open_call != 0
+      && fake->fail_open_call == fake->open_calls) {
+    errno = fake->fail_open_errno;
+    return -1;
+  }
   fake->chip_open = 1;
   return TEST_CHIP_FD;
 }
@@ -187,6 +194,50 @@ static struct pidp_gpio_v2_mapping test_mapping(void)
   return mapping;
 }
 
+static const char valid_offsets_text[] =
+  "90,4,72,5,111,6,50,12,88,13,89,14,91,15,92,16,93,17,20,21,22";
+static const char max_offsets_text[] =
+  "4294967295,4,72,5,111,6,50,12,88,13,89,14,91,15,92,16,93,17,20,21,22";
+static const char overflow_offsets_text[] =
+  "90,4,72,5,111,6,50,12,88,13,89,14,91,15,92,16,93,17,20,21,4294967296";
+static const char duplicate_offsets_text[] =
+  "90,4,72,5,111,6,50,12,88,13,89,14,91,15,92,16,93,17,20,21,90";
+static const char sign_offsets_text[] =
+  "+90,4,72,5,111,6,50,12,88,13,89,14,91,15,92,16,93,17,20,21,22";
+static const char negative_offsets_text[] =
+  "-90,4,72,5,111,6,50,12,88,13,89,14,91,15,92,16,93,17,20,21,22";
+static const char whitespace_offsets_text[] =
+  "90, 4,72,5,111,6,50,12,88,13,89,14,91,15,92,16,93,17,20,21,22";
+static const char trailing_junk_offsets_text[] =
+  "90,4,72,5,111,6,50,12,88,13,89,14,91,15,92,16,93,17,20,21,22x";
+static const char trailing_comma_offsets_text[] =
+  "90,4,72,5,111,6,50,12,88,13,89,14,91,15,92,16,93,17,20,21,22,";
+static const char short_offsets_text[] =
+  "90,4,72,5,111,6,50,12,88,13,89,14,91,15,92,16,93,17,20,21";
+static const char long_offsets_text[] =
+  "90,4,72,5,111,6,50,12,88,13,89,14,91,15,92,16,93,17,20,21,22,23";
+
+static void assert_mapping_unchanged(
+    const struct pidp_gpio_v2_mapping *mapping,
+    const struct pidp_gpio_v2_mapping *expected)
+{
+  unsigned int i;
+
+  assert(mapping->chip_path == expected->chip_path);
+  for (i = 0; i < PIDP_GPIO_V2_LINES; ++i)
+    assert(mapping->offsets[i] == expected->offsets[i]);
+}
+
+static void assert_parse_failure(struct pidp_gpio_v2_mapping *mapping,
+    const struct pidp_gpio_v2_mapping *expected, const char *chip_path,
+    const char *offsets_text, int expected_errno)
+{
+  errno = 0;
+  assert(pidp_gpio_v2_parse_mapping(mapping, chip_path, offsets_text) == -1);
+  assert(errno == expected_errno);
+  assert_mapping_unchanged(mapping, expected);
+}
+
 static void assert_initial_config(const struct gpio_v2_line_config *config)
 {
   assert(config->flags == (GPIO_V2_LINE_FLAG_INPUT
@@ -286,6 +337,139 @@ static void test_mapping_validation(void)
   assert(errno == EINVAL);
   assert(fake.open_calls == 0);
   assert(fake.ioctl_calls == 0);
+}
+
+static void test_mapping_parser(void)
+{
+  struct pidp_gpio_v2_mapping mapping;
+  struct pidp_gpio_v2_mapping expected;
+  const char *chip_path;
+
+  expected = test_mapping();
+  chip_path = expected.chip_path;
+  mapping = test_mapping();
+  assert(pidp_gpio_v2_parse_mapping(&mapping, chip_path,
+      valid_offsets_text) == 0);
+  assert_mapping_unchanged(&mapping, &expected);
+
+  mapping = test_mapping();
+  assert(pidp_gpio_v2_parse_mapping(&mapping, chip_path,
+      max_offsets_text) == 0);
+  assert(mapping.chip_path == chip_path);
+  assert(mapping.offsets[0] == UINT32_MAX);
+
+  mapping = test_mapping();
+  expected = mapping;
+  assert_parse_failure(&mapping, &expected, NULL, valid_offsets_text, EINVAL);
+
+  mapping = test_mapping();
+  expected = mapping;
+  assert_parse_failure(&mapping, &expected, "", valid_offsets_text, EINVAL);
+
+  mapping = test_mapping();
+  expected = mapping;
+  assert_parse_failure(&mapping, &expected, chip_path, NULL, EINVAL);
+
+  mapping = test_mapping();
+  expected = mapping;
+  assert_parse_failure(&mapping, &expected, chip_path, "", EINVAL);
+
+  mapping = test_mapping();
+  expected = mapping;
+  assert_parse_failure(&mapping, &expected, chip_path, sign_offsets_text,
+      EINVAL);
+
+  mapping = test_mapping();
+  expected = mapping;
+  assert_parse_failure(&mapping, &expected, chip_path, negative_offsets_text,
+      EINVAL);
+
+  mapping = test_mapping();
+  expected = mapping;
+  assert_parse_failure(&mapping, &expected, chip_path, whitespace_offsets_text,
+      EINVAL);
+
+  mapping = test_mapping();
+  expected = mapping;
+  assert_parse_failure(&mapping, &expected, chip_path,
+      trailing_junk_offsets_text, EINVAL);
+
+  mapping = test_mapping();
+  expected = mapping;
+  assert_parse_failure(&mapping, &expected, chip_path,
+      trailing_comma_offsets_text, EINVAL);
+
+  mapping = test_mapping();
+  expected = mapping;
+  assert_parse_failure(&mapping, &expected, chip_path, short_offsets_text,
+      EINVAL);
+
+  mapping = test_mapping();
+  expected = mapping;
+  assert_parse_failure(&mapping, &expected, chip_path, long_offsets_text,
+      EINVAL);
+
+  mapping = test_mapping();
+  expected = mapping;
+  assert_parse_failure(&mapping, &expected, chip_path, overflow_offsets_text,
+      ERANGE);
+
+  mapping = test_mapping();
+  expected = mapping;
+  assert_parse_failure(&mapping, &expected, chip_path,
+      duplicate_offsets_text, EINVAL);
+}
+
+static void test_open_transport_failures(void)
+{
+  struct fake_transport fake;
+  struct pidp_gpio_v2 backend = {0};
+  struct pidp_gpio_v2_mapping mapping = test_mapping();
+
+  fake_init(&fake);
+  fake.fail_open_call = 1;
+  fake.fail_open_errno = EACCES;
+  assert(pidp_gpio_v2_open(&backend, &mapping, &fake_ops, &fake) == -1);
+  assert(errno == EACCES);
+  assert(fake.open_calls == 1);
+  assert(fake.ioctl_calls == 0);
+  assert(fake.close_calls == 0);
+  assert(fake.chip_open == 0);
+  assert(pidp_gpio_v2_close(&backend) == 0);
+
+  fake_init(&fake);
+  fake.fail_ioctl_call = 1;
+  fake.fail_ioctl_errno = EIO;
+  assert(pidp_gpio_v2_open(&backend, &mapping, &fake_ops, &fake) == -1);
+  assert(errno == EIO);
+  assert(fake.open_calls == 1);
+  assert(fake.ioctl_calls == 1);
+  assert(fake.close_calls == 1);
+  assert(fake.chip_open == 0);
+  assert(pidp_gpio_v2_close(&backend) == 0);
+
+  fake_init(&fake);
+  fake.fail_ioctl_call = 2;
+  fake.fail_ioctl_errno = EBUSY;
+  assert(pidp_gpio_v2_open(&backend, &mapping, &fake_ops, &fake) == -1);
+  assert(errno == EBUSY);
+  assert(fake.open_calls == 1);
+  assert(fake.ioctl_calls == 2);
+  assert(fake.close_calls == 1);
+  assert(fake.chip_open == 0);
+  assert(pidp_gpio_v2_close(&backend) == 0);
+
+  fake_init(&fake);
+  fake.fail_close_call = 1;
+  fake.fail_close_errno = EIO;
+  assert(pidp_gpio_v2_open(&backend, &mapping, &fake_ops, &fake) == -1);
+  assert(errno == EIO);
+  assert(fake.open_calls == 1);
+  assert(fake.ioctl_calls == 2);
+  assert(fake.close_calls == 2);
+  assert(fake.request_open == 0);
+  assert(pidp_gpio_v2_close(&backend) == 0);
+  assert(fake.close_calls == 2);
 }
 
 static void test_display_switch_and_idle(void)
@@ -415,6 +599,8 @@ static void test_ioctl_failure_and_cleanup(void)
 int main(void)
 {
   test_mapping_validation();
+  test_mapping_parser();
+  test_open_transport_failures();
   test_display_switch_and_idle();
   test_invalid_runtime_arguments();
   test_ioctl_failure_and_cleanup();

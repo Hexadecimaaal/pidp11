@@ -79,6 +79,9 @@
 #include "main.h"
 #include "gpio.h"
 #include "gpiopattern.h"
+#ifdef PIDP_GPIO_V2
+#include "gpio_linux.h"
+#endif
 
 char program_info[1024];
 char program_name[1024]; // argv[0]
@@ -296,18 +299,26 @@ int blink_thread_terminate = 0;
 pthread_t gpiopattern_thread;
 int gpiopattern_thread_terminate = 0;
 
-static void gpio_mux_thread_start()
+static int gpio_mux_thread_start()
 {
     int res;
 //	printf("\nPiDP FP driver 3\n");
+#ifdef PIDP_GPIO_V2
+    if (pidp_gpio_linux_init() < 0)
+        return -1;
+#endif
     res = pthread_create(&blink_thread, NULL, blink, &blink_thread_terminate);
     if (res) {
         fprintf(stderr, "Error creating gpio_mux thread, return code %d\n", res);
-        exit(EXIT_FAILURE);
+#ifdef PIDP_GPIO_V2
+        (void)pidp_gpio_linux_shutdown();
+#endif
+        return -1;
     }
 //    printf("Created \"gpio_mux\" thread\n");
 
     sleep(2); // allow 2 sec for multiplex to start
+    return 0;
 }
 
 static void gpiopattern_start_thread()
@@ -704,7 +715,8 @@ int main(int argc, char *argv[])
         exit(0);
     }
 
-    gpio_mux_thread_start();
+    if (gpio_mux_thread_start() < 0)
+        return 1;
     gpiopattern_start_thread();
 
     blinkenlight_api_server();
