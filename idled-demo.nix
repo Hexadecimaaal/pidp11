@@ -12,9 +12,14 @@ let
     nixpkgs = <nixpkgs>;
     pkgs = target;
   };
+  # the temporary runtime must not require the NixOS rpcbind service account.
+  rpcbind = target.rpcbind.overrideAttrs (old: {
+    configureFlags =
+      builtins.filter (flag: !(pkgs.lib.hasPrefix "--with-rpcuser=" flag)) old.configureFlags
+      ++ [ "--with-rpcuser=nobody" ];
+  });
   script = pkgs.replaceVars ./idled-demo.sh {
-    inherit simulator server;
-    rpcbind = target.rpcbind;
+    inherit simulator server rpcbind;
     util_linux = target.util-linux;
     iproute2 = target.iproute2;
     gnused = target.gnused;

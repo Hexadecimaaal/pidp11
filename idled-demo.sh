@@ -20,6 +20,8 @@ ip='@iproute2@/bin/ip'
 sed='@gnused@/bin/sed'
 tail="$coreutils/tail"
 readlink="$coreutils/readlink"
+# /run/current-system is hidden by the private runtime mount.
+export PATH="$coreutils:@bash@/bin"
 
 gpio_chip="${PIDP_GPIO_CHIP:-/dev/gpiochip0}"
 gpio_offsets=61,44,47,54,51,50,60,43,55,37,39,56,49,53,52,48,46,59,36,42,38
@@ -253,6 +255,7 @@ while :; do
 done
 
 "$sed" \
+  -e 's/\r$//' \
   -e '/^!column -c 75 \.\.\/selections$/d' \
   -e '/^echo PiDP-11\/70 boot menu/d' \
   -e '/^echo Now running IDLED/d' \
