@@ -40,7 +40,8 @@ int pidp_gpio_scan_rows(struct pidp_gpio_v2 *backend,
     pidp_gpio_delay delay, void *context);
 
 /* sample only row (0..2), leaving other published rows and their state intact.
- * row two also advances the existing rotary decoder and knob positions.
+ * acquire two six-column groups with 100us settling each; publish only after
+ * both reads succeed. row two then advances the rotary decoder and knobs.
  * successful calls leave the request idle; failures best-effort idle and close.
  */
 int pidp_gpio_scan_input_row(struct pidp_gpio_v2 *backend, unsigned int row,

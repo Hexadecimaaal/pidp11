@@ -19,8 +19,15 @@ struct port_fake {
   const struct pidp_fixture_inputs *inputs;
   volatile int *read_index;
   struct pidp_fixture_state state;
+  uint64_t pullup_mask;
+  uint64_t disabled_mask;
+  uint64_t subset_pullups[PIDP_FIXTURE_MAX_INTERVALS];
+  uint64_t subset_disabled[PIDP_FIXTURE_MAX_INTERVALS];
+  size_t subset_config_count;
   size_t sample_index[PIDP_GPIO_V2_SWITCH_ROWS];
   unsigned int delay_count;
+  unsigned int read_count;
+  unsigned int fail_read_call;
   int chip_open;
   int request_open;
 };
@@ -75,25 +82,62 @@ static void port_set_line_level(struct pidp_fixture_state *state,
   }
 }
 
-static void port_apply_config(struct port_fake *fake,
+static int port_apply_config(struct port_fake *fake,
     const struct gpio_v2_line_config *config)
 {
   uint64_t output_mask = 0;
   uint64_t value_mask = 0;
   uint64_t value_bits = 0;
+  uint64_t pullup_mask;
+  uint64_t disabled_mask;
+  const uint64_t all_mask = (UINT64_C(1) << PIDP_GPIO_V2_LINES) - 1u;
   unsigned int i;
 
+  pullup_mask = config->flags & GPIO_V2_LINE_FLAG_BIAS_PULL_UP
+      ? all_mask : 0;
+  disabled_mask = config->flags & GPIO_V2_LINE_FLAG_BIAS_DISABLED
+      ? all_mask : 0;
   for (i = 0; i < config->num_attrs; ++i) {
     const struct gpio_v2_line_config_attribute *attribute
         = &config->attrs[i];
     if (attribute->attr.id == GPIO_V2_LINE_ATTR_ID_FLAGS) {
-      if (attribute->attr.flags & GPIO_V2_LINE_FLAG_OUTPUT)
-        output_mask |= attribute->mask;
+      uint64_t mask = attribute->mask;
+      uint64_t flags = attribute->attr.flags;
+
+      if (flags & GPIO_V2_LINE_FLAG_OUTPUT) {
+        output_mask |= mask;
+        pullup_mask &= ~mask;
+        disabled_mask &= ~mask;
+      }
+      if (flags & GPIO_V2_LINE_FLAG_BIAS_PULL_UP) {
+        pullup_mask |= mask;
+        disabled_mask &= ~mask;
+      }
+      if (flags & GPIO_V2_LINE_FLAG_BIAS_DISABLED) {
+        disabled_mask |= mask;
+        pullup_mask &= ~mask;
+      }
     } else if (attribute->attr.id
         == GPIO_V2_LINE_ATTR_ID_OUTPUT_VALUES) {
       value_mask |= attribute->mask;
       value_bits |= attribute->attr.values;
     }
+  }
+  if ((pullup_mask & disabled_mask) != 0
+      || (pullup_mask | disabled_mask | output_mask) != all_mask) {
+    errno = EINVAL;
+    return -1;
+  }
+  fake->pullup_mask = pullup_mask;
+  fake->disabled_mask = disabled_mask;
+  if (config->flags & GPIO_V2_LINE_FLAG_BIAS_DISABLED) {
+    if (fake->subset_config_count >= PIDP_FIXTURE_MAX_INTERVALS) {
+      errno = EOVERFLOW;
+      return -1;
+    }
+    fake->subset_pullups[fake->subset_config_count] = pullup_mask;
+    fake->subset_disabled[fake->subset_config_count] = disabled_mask;
+    ++fake->subset_config_count;
   }
 
   memset(&fake->state, 0, sizeof(fake->state));
@@ -105,6 +149,7 @@ static void port_apply_config(struct port_fake *fake,
     port_set_line_level(&fake->state, i, high);
   }
   port_record_state(fake);
+  return 0;
 }
 
 static void port_set_values(struct port_fake *fake,
@@ -157,17 +202,18 @@ static int port_ioctl(void *context, int fd, unsigned long request,
     }
     line_request->fd = FIXTURE_REQUEST_FD;
     fake->request_open = 1;
-    port_apply_config(fake, &line_request->config);
+    if (port_apply_config(fake, &line_request->config) < 0) {
+      fake->request_open = 0;
+      return -1;
+    }
     return 0;
   }
   if (fd != FIXTURE_REQUEST_FD || !fake->request_open) {
     errno = EBADF;
     return -1;
   }
-  if (request == GPIO_V2_LINE_SET_CONFIG_IOCTL) {
-    port_apply_config(fake, argument);
-    return 0;
-  }
+  if (request == GPIO_V2_LINE_SET_CONFIG_IOCTL)
+    return port_apply_config(fake, argument);
   if (request == GPIO_V2_LINE_SET_VALUES_IOCTL) {
     port_set_values(fake, argument);
     return 0;
@@ -186,6 +232,12 @@ static int port_ioctl(void *context, int fd, unsigned long request,
     row = 0;
     while ((fake->state.switch_output & (UINT8_C(1) << row)) == 0)
       ++row;
+    ++fake->read_count;
+    if (fake->fail_read_call != 0
+        && fake->read_count == fake->fail_read_call) {
+      errno = ETIMEDOUT;
+      return -1;
+    }
     if (fake->sample_index[row] >= GPIOPATTERN_LED_BRIGHTNESS_PHASES) {
       errno = EOVERFLOW;
       return -1;
@@ -340,6 +392,27 @@ static unsigned int bit_count(unsigned int value)
     ++count;
   }
   return count;
+}
+static int subset_config_equal(const struct port_fake *fake, size_t index,
+    unsigned int row, uint32_t column_mask)
+{
+  const uint64_t row_line = UINT64_C(1)
+      << (PIDP_GPIO_V2_LED_ROWS + PIDP_GPIO_V2_COLS + row);
+  const uint64_t column_lines = (uint64_t)FIXTURE_ALL_COLS
+      << PIDP_GPIO_V2_LED_ROWS;
+  const uint64_t switch_lines = (UINT64_C(1)
+      << PIDP_GPIO_V2_SWITCH_ROWS) - 1u;
+  const uint64_t expected_pullups =
+      ((uint64_t)column_mask << PIDP_GPIO_V2_LED_ROWS)
+      | ((switch_lines << (PIDP_GPIO_V2_LED_ROWS + PIDP_GPIO_V2_COLS))
+          & ~row_line);
+  const uint64_t expected_disabled = column_lines
+      & ~((uint64_t)column_mask << PIDP_GPIO_V2_LED_ROWS);
+
+  return index < fake->subset_config_count
+      && fake->subset_pullups[index] == expected_pullups
+      && fake->subset_disabled[index] == expected_disabled
+      && (fake->subset_pullups[index] & fake->subset_disabled[index]) == 0;
 }
 
 static int safe_trace(const char *name, const struct pidp_fixture_trace *trace)
@@ -665,7 +738,8 @@ static int input_row_case(void)
 
   memset(&inputs, 0, sizeof(inputs));
   memset(&trace, 0, sizeof(trace));
-  inputs.values[1][0] = UINT32_C(0xa5a);
+  inputs.values[1][0] = UINT32_C(0xa55);
+  inputs.values[1][1] = UINT32_C(0x17a);
   if (open_port(&fake, &backend, &trace, &inputs, &index) < 0)
     return 0;
   if (pidp_gpio_scan_input_row(&backend, 1, switches, &rotary, knobs,
@@ -677,15 +751,20 @@ static int input_row_case(void)
   }
   pidp_fixture_record_final(&trace, &fake.state);
   if (!safe_trace("input row", &trace)
-      || trace.sample_count != 1 || trace.interval_count != 1
+      || trace.sample_count != 2 || trace.interval_count != 2
       || trace.samples[0].row != 1
-      || trace.samples[0].physical_bits != UINT32_C(0xa5a)
+      || trace.samples[0].physical_bits != UINT32_C(0xa55)
+      || trace.samples[1].row != 1
+      || trace.samples[1].physical_bits != UINT32_C(0x17a)
       || switches[0] != UINT32_C(0x111)
-      || switches[1] != UINT32_C(0xa5a)
+      || switches[1] != UINT32_C(0x155)
       || switches[2] != UINT32_C(0x333)
       || rotary.last_code[0] != 1 || rotary.last_code[1] != 2
       || knobs[0] != 5 || knobs[1] != 2
       || fake.request_open || fake.chip_open
+      || fake.subset_config_count != 2
+      || !subset_config_equal(&fake, 0, 1, UINT32_C(0x03f))
+      || !subset_config_equal(&fake, 1, 1, UINT32_C(0xfc0))
       || trace.final_state.switch_output != 0
       || trace.final_state.led_high != 0
       || trace.final_state.col_output != 0) {
@@ -696,7 +775,7 @@ static int input_row_case(void)
     const struct pidp_fixture_interval *interval = &trace.intervals[i];
     const struct pidp_fixture_snapshot *state = &interval->state;
 
-    if (interval->duration_ns != 3000000u
+    if (interval->duration_ns != 100000u
         || state->led_output != ((1u << PIDP_GPIO_V2_LED_ROWS) - 1u)
         || state->led_high != 0 || state->col_output != 0
         || state->switch_output != (1u << 1)
@@ -707,8 +786,7 @@ static int input_row_case(void)
   }
   return 1;
 }
-
-static int input_row_encoder_case(void)
+static int input_row_read_failure_case(void)
 {
   struct pidp_fixture_inputs inputs;
   struct pidp_fixture_trace trace;
@@ -726,6 +804,64 @@ static int input_row_encoder_case(void)
   inputs.values[2][1] = UINT32_C(0x303);
   if (open_port(&fake, &backend, &trace, &inputs, &index) < 0)
     return 0;
+  fake.fail_read_call = 2;
+  if (pidp_gpio_scan_input_row(&backend, 2, switches, &rotary, knobs,
+      port_delay, &fake) >= 0 || errno != ETIMEDOUT) {
+    fprintf(stderr, "input row read failure was not returned\n");
+    (void)pidp_gpio_v2_close(&backend);
+    return 0;
+  }
+  pidp_fixture_record_final(&trace, &fake.state);
+  if (!safe_trace("input row read failure", &trace)
+      || trace.sample_count != 1 || trace.interval_count != 2
+      || trace.samples[0].row != 2
+      || trace.samples[0].physical_bits != UINT32_C(0x102)
+      || switches[0] != UINT32_C(0x111)
+      || switches[1] != UINT32_C(0x222)
+      || switches[2] != UINT32_C(0x333)
+      || rotary.last_code[0] != 3 || rotary.last_code[1] != 3
+      || knobs[0] != 1 || knobs[1] != 1
+      || fake.request_open || fake.chip_open
+      || fake.subset_config_count != 2
+      || !subset_config_equal(&fake, 0, 2, UINT32_C(0x03f))
+      || !subset_config_equal(&fake, 1, 2, UINT32_C(0xfc0))
+      || trace.final_state.switch_output != 0
+      || trace.final_state.led_high != 0
+      || trace.final_state.col_output != 0) {
+    fprintf(stderr, "input row read failure published partial state\n");
+    return 0;
+  }
+  if (trace.intervals[0].duration_ns != 100000u
+      || trace.intervals[1].duration_ns != 100000u
+      || trace.intervals[0].state.switch_output != (1u << 2)
+      || trace.intervals[1].state.switch_output != (1u << 2)) {
+    fprintf(stderr, "input row read failure used the wrong waveform\n");
+    return 0;
+  }
+  return 1;
+}
+
+static int input_row_encoder_case(void)
+{
+  struct pidp_fixture_inputs inputs;
+  struct pidp_fixture_trace trace;
+  struct pidp_gpio_v2 backend;
+  struct port_fake fake;
+  struct pidp_gpio_rotary rotary = {{3, 3}};
+  uint32_t switches[PIDP_GPIO_V2_SWITCH_ROWS] =
+      {UINT32_C(0x111), UINT32_C(0x222), UINT32_C(0x333)};
+  int knobs[2] = {1, 1};
+  int index = 0;
+  size_t i;
+
+  memset(&inputs, 0, sizeof(inputs));
+  memset(&trace, 0, sizeof(trace));
+  inputs.values[2][0] = UINT32_C(0x102);
+  inputs.values[2][1] = UINT32_C(0x102);
+  inputs.values[2][2] = UINT32_C(0x303);
+  inputs.values[2][3] = UINT32_C(0x303);
+  if (open_port(&fake, &backend, &trace, &inputs, &index) < 0)
+    return 0;
   if (pidp_gpio_scan_input_row(&backend, 2, switches, &rotary, knobs,
       port_delay, &fake) < 0
       || pidp_gpio_scan_input_row(&backend, 2, switches, &rotary, knobs,
@@ -737,23 +873,41 @@ static int input_row_encoder_case(void)
   }
   pidp_fixture_record_final(&trace, &fake.state);
   if (!safe_trace("input row encoder", &trace)
-      || trace.sample_count != 2 || trace.interval_count != 2
-      || trace.samples[0].row != 2 || trace.samples[1].row != 2
+      || trace.sample_count != 4 || trace.interval_count != 4
+      || trace.samples[0].row != 2
+      || trace.samples[0].physical_bits != UINT32_C(0x102)
+      || trace.samples[1].row != 2
+      || trace.samples[1].physical_bits != UINT32_C(0x102)
+      || trace.samples[2].row != 2
+      || trace.samples[2].physical_bits != UINT32_C(0x303)
+      || trace.samples[3].row != 2
+      || trace.samples[3].physical_bits != UINT32_C(0x303)
       || switches[0] != UINT32_C(0x111)
       || switches[1] != UINT32_C(0x222)
       || switches[2] != UINT32_C(0x103)
       || rotary.last_code[0] != 3 || rotary.last_code[1] != 3
       || knobs[0] != 2 || knobs[1] != 1
-      || fake.request_open || fake.chip_open) {
+      || fake.request_open || fake.chip_open
+      || fake.subset_config_count != 4
+      || !subset_config_equal(&fake, 0, 2, UINT32_C(0x03f))
+      || !subset_config_equal(&fake, 1, 2, UINT32_C(0xfc0))
+      || !subset_config_equal(&fake, 2, 2, UINT32_C(0x03f))
+      || !subset_config_equal(&fake, 3, 2, UINT32_C(0xfc0))) {
     fprintf(stderr, "input row encoder state was not updated\n");
     return 0;
   }
-  if (trace.intervals[0].duration_ns != 3000000u
-      || trace.intervals[1].duration_ns != 3000000u
-      || trace.intervals[0].state.switch_output != (1u << 2)
-      || trace.intervals[1].state.switch_output != (1u << 2)) {
-    fprintf(stderr, "input row encoder used the wrong waveform\n");
-    return 0;
+  for (i = 0; i < trace.interval_count; ++i) {
+    const struct pidp_fixture_interval *interval = &trace.intervals[i];
+    const struct pidp_fixture_snapshot *state = &interval->state;
+
+    if (interval->duration_ns != 100000u
+        || state->switch_output != (1u << 2)
+        || state->led_output != ((1u << PIDP_GPIO_V2_LED_ROWS) - 1u)
+        || state->led_high != 0 || state->col_output != 0
+        || (state->switch_high & state->switch_output) != 0) {
+      fprintf(stderr, "input row encoder used the wrong waveform\n");
+      return 0;
+    }
   }
   return 1;
 }
@@ -816,9 +970,13 @@ static int input_scan_case(void)
     inputs.values[1][phase] = UINT32_C(0x155);
   }
   inputs.values[2][0] = UINT32_C(0x100);
-  inputs.values[2][1] = UINT32_C(0x300);
-  inputs.values[2][2] = UINT32_C(0x400);
-  inputs.values[2][3] = UINT32_C(0xc00);
+  inputs.values[2][1] = UINT32_C(0x100);
+  inputs.values[2][2] = UINT32_C(0x300);
+  inputs.values[2][3] = UINT32_C(0x300);
+  inputs.values[2][4] = UINT32_C(0x400);
+  inputs.values[2][5] = UINT32_C(0x400);
+  inputs.values[2][6] = UINT32_C(0xc00);
+  inputs.values[2][7] = UINT32_C(0xc00);
   if (open_port(&fake, &backend, &trace, &inputs, &index) < 0)
     return 0;
   for (phase = 0; phase < 4; ++phase) {
@@ -835,9 +993,10 @@ static int input_scan_case(void)
   }
   pidp_fixture_record_final(&trace, &fake.state);
   if (!safe_trace("input scan", &trace)
-      || trace.sample_count != PIDP_GPIO_V2_SWITCH_ROWS * 4u
-      || trace.interval_count != PIDP_GPIO_V2_SWITCH_ROWS * 4u
+      || trace.sample_count != PIDP_GPIO_V2_SWITCH_ROWS * 4u * 2u
+      || trace.interval_count != PIDP_GPIO_V2_SWITCH_ROWS * 4u * 2u
       || fake.request_open || fake.chip_open
+      || fake.subset_config_count != PIDP_GPIO_V2_SWITCH_ROWS * 4u * 2u
       || knobs[0] != 2 || knobs[1] != 2
       || trace.final_state.led_output != ((1u << PIDP_GPIO_V2_LED_ROWS) - 1u)
       || trace.final_state.led_high != 0
@@ -856,11 +1015,17 @@ static int input_scan_case(void)
   for (i = 0; i < trace.interval_count; ++i) {
     const struct pidp_fixture_interval *interval = &trace.intervals[i];
     const struct pidp_fixture_snapshot *state = &interval->state;
-    if (interval->duration_ns != 3000000u
+    unsigned int row = (unsigned int)((i / 2u)
+        % PIDP_GPIO_V2_SWITCH_ROWS);
+    uint32_t column_mask = i % 2u == 0 ? UINT32_C(0x03f)
+        : UINT32_C(0xfc0);
+
+    if (interval->duration_ns != 100000u
         || state->led_output != ((1u << PIDP_GPIO_V2_LED_ROWS) - 1u)
         || state->led_high != 0 || state->col_output != 0
-        || state->switch_output != (1u << (i % PIDP_GPIO_V2_SWITCH_ROWS))
-        || (state->switch_high & state->switch_output) != 0) {
+        || state->switch_output != (1u << row)
+        || (state->switch_high & state->switch_output) != 0
+        || !subset_config_equal(&fake, i, row, column_mask)) {
       fprintf(stderr, "input scan selected unsafe switch state\n");
       return 0;
     }
@@ -924,12 +1089,17 @@ static int input_failure_case(unsigned int fail_call, int interrupted)
       {UINT32_C(0xaaa), UINT32_C(0xbbb), UINT32_C(0xccc)};
   int knobs[2] = {1, 1};
   int index = 0;
+  unsigned int completed_rows = (fail_call - 1u) / 2u;
   int expected_error = interrupted ? EINTR : ETIMEDOUT;
 
+  if (completed_rows > PIDP_GPIO_V2_SWITCH_ROWS)
+    completed_rows = PIDP_GPIO_V2_SWITCH_ROWS;
   memset(&inputs, 0, sizeof(inputs));
   memset(&trace, 0, sizeof(trace));
   inputs.values[0][0] = UINT32_C(0x155);
+  inputs.values[0][1] = UINT32_C(0x155);
   inputs.values[1][0] = UINT32_C(0x2aa);
+  inputs.values[1][1] = UINT32_C(0x2aa);
   memset(&backend, 0, sizeof(backend));
   if (open_port(&fake, &backend, &trace, &inputs, &index) < 0)
     return 0;
@@ -940,12 +1110,14 @@ static int input_failure_case(unsigned int fail_call, int interrupted)
     (void)pidp_gpio_v2_close(&backend);
     return 0;
   }
+  pidp_fixture_record_final(&trace, &fake.state);
   if (fake.request_open || fake.chip_open
-      || trace.sample_count != (fail_call == 1 ? 0 : 1)
+      || trace.sample_count != fail_call - 1u
       || trace.interval_count != fail_call - 1u
-      || switches[0] != (fail_call == 1 ? UINT32_C(0xaaa)
-          : UINT32_C(0x155))
-      || switches[1] != UINT32_C(0xbbb)
+      || switches[0] != (completed_rows >= 1 ? UINT32_C(0x155)
+          : UINT32_C(0xaaa))
+      || switches[1] != (completed_rows >= 2 ? UINT32_C(0x2aa)
+          : UINT32_C(0xbbb))
       || switches[2] != UINT32_C(0xccc)
       || rotary.last_code[0] != 3 || rotary.last_code[1] != 3
       || knobs[0] != 1 || knobs[1] != 1
@@ -1051,7 +1223,8 @@ int main(void)
       || !single_pattern_case("single-dense", FIXTURE_ALL_COLS)
       || !single_pattern_case("single-mixed", UINT32_C(0xa55))
       || !row_pattern_case("rows-mixed", row_patterns)
-      || !input_row_case() || !input_row_encoder_case()
+      || !input_row_case() || !input_row_read_failure_case()
+      || !input_row_encoder_case()
       || !input_row_invalid_case() || !input_scan_case())
     return 1;
   if (!single_failure_case(0, 0) || !single_failure_case(1, 0)
@@ -1060,7 +1233,8 @@ int main(void)
       || !row_failure_case(0, 0) || !row_failure_case(1, 0)
       || !row_failure_case(2, 0) || !row_failure_case(12, 0)
       || !row_failure_case(1, 1) || !row_failure_case(2, 1)
-      || !input_failure_case(1, 0) || !input_failure_case(2, 1))
+      || !input_failure_case(1, 0) || !input_failure_case(2, 1)
+      || !input_failure_case(5, 0))
     return 1;
   if (!timing_failure_case(1) || !timing_failure_case(2)
       || !timing_failure_case(13))

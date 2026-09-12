@@ -223,22 +223,26 @@ int pidp_gpio_scan_input_row(struct pidp_gpio_v2 *backend, unsigned int row,
     struct pidp_gpio_rotary *rotary, int knobs[2],
     pidp_gpio_delay delay, void *context)
 {
-  uint32_t physical_bits;
-  uint32_t published_bits;
+  uint32_t published_bits = 0;
+  uint32_t column_mask;
 
   if (backend == NULL || switches == NULL || rotary == NULL || knobs == NULL
       || row >= PIDP_GPIO_V2_SWITCH_ROWS)
     return scan_failure(backend, EINVAL);
   if (delay == NULL)
     delay = interruptible_delay;
-  if (pidp_gpio_v2_select_switch(backend, row) < 0)
-    return scan_failure(backend, errno);
-  /* full rows on VisionFive 2 still misread at 2ms with the LEDs active. */
-  if (delay_for(context, delay, 3000000L) < 0)
-    return scan_failure(backend, errno);
-  if (pidp_gpio_v2_read_switches(backend, &physical_bits) < 0)
-    return scan_failure(backend, errno);
-  published_bits = physical_bits & PIDP_GPIO_V2_LED_MASK;
+  for (column_mask = UINT32_C(0x03f); column_mask <= UINT32_C(0xfc0);
+      column_mask <<= 6) {
+    uint32_t physical_bits;
+
+    if (pidp_gpio_v2_select_switch_columns(backend, row, column_mask) < 0)
+      return scan_failure(backend, errno);
+    if (delay_for(context, delay, 100000L) < 0)
+      return scan_failure(backend, errno);
+    if (pidp_gpio_v2_read_switches(backend, &physical_bits) < 0)
+      return scan_failure(backend, errno);
+    published_bits |= physical_bits & column_mask;
+  }
   if (row == 2)
     update_rotary(rotary, knobs, &published_bits);
   switches[row] = published_bits;
