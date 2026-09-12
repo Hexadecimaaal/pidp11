@@ -567,7 +567,9 @@ size_t *sim_sub_instr_off = NULL;
 static double sim_time;
 static uint32 sim_rtime;
 static int32 noqueue_time;
-volatile t_bool stop_cpu = FALSE;
+volatile sig_atomic_t stop_cpu = FALSE;
+static volatile sig_atomic_t sim_panel_only = FALSE;
+static volatile sig_atomic_t sim_exit_requested = FALSE;
 static unsigned int sim_stop_sleep_ms = 250;
 static char **sim_argv;
 t_value *sim_eval = NULL;
@@ -2366,6 +2368,13 @@ if ((stat = sim_brk_init ()) != SCPE_OK) {
     return 0;
     }
 signal (SIGINT, int_handler);
+#ifdef USE_REALCONS
+cptr = getenv ("PIDP_REALCONS_PANEL_ONLY");
+sim_panel_only = cptr && strcmp (cptr, "1") == 0;
+/* service termination must remain handled while the cpu is halted, too. */
+if (sim_panel_only && signal (SIGTERM, int_handler) == SIG_ERR)
+    return sim_messagef (SCPE_SIGERR, "Can't establish SIGTERM");
+#endif
 if (!sim_quiet) {
     printf ("\n");
     show_version (stdout, NULL, NULL, 0, NULL);
@@ -2484,6 +2493,10 @@ CTAB *cmdp;
 
 stat = SCPE_BARE_STATUS(stat);                          /* remove possible flag */
 while (stat != SCPE_EXIT) {                             /* in case exit */
+    if (sim_exit_requested) {
+        stat = SCPE_EXIT;
+        break;
+        }
     if (stop_cpu) {                                     /* SIGINT happened? */
         stop_cpu = FALSE;
         if (!sim_ttisatty()) {
@@ -2502,6 +2515,10 @@ while (stat != SCPE_EXIT) {                             /* in case exit */
             }
         else
             cptr = read_line_p (sim_prompt, cbuf, sizeof(cbuf), stdin);/* read with prompt*/
+        }
+    if (sim_exit_requested) {
+        stat = SCPE_EXIT;
+        break;
         }
     if (cptr == NULL) {                                 /* EOF? or SIGINT? */
         if (sim_ttisatty()) {
@@ -3332,6 +3349,10 @@ if (errabort)                                           /* -e flag? */
     set_on (1, NULL);                                   /* equivalent to ON ERROR RETURN */
 
 do {
+    if (sim_exit_requested) {
+        stat = SCPE_EXIT;
+        break;
+        }
     if (stop_cpu) {                                     /* SIGINT? */
         if (sim_on_actions[sim_do_depth][ON_SIGINT_ACTION]) {
             stop_cpu = FALSE;
@@ -7380,6 +7401,9 @@ if (signal (SIGTERM, int_handler) == SIG_ERR) {         /* set WRU */
     return sim_messagef (SCPE_SIGERR, "Can't establish SIGTERM");
     }
 stop_cpu = FALSE;
+/* a term arriving before the run transition must not be cleared with wru. */
+if (sim_exit_requested)
+    stop_cpu = TRUE;
 sim_is_running = TRUE;                                  /* flag running */
 if (sim_step)                                           /* set step timer */
     sim_activate (&sim_step_unit, sim_step);
@@ -7444,7 +7468,8 @@ sim_brk_clrall (BRK_TYP_DYN_STEPOVER);                  /* cancel any step/over 
 #ifdef SIGHUP
 signal (SIGHUP, SIG_DFL);                               /* cancel WRU */
 #endif
-signal (SIGTERM, SIG_DFL);                              /* cancel WRU */
+if (!sim_panel_only)
+    signal (SIGTERM, SIG_DFL);                          /* cancel WRU */
 if (sim_log)                                            /* flush console log */
     fflush (sim_log);
 if (sim_deb)                                            /* flush debug log */
@@ -7602,6 +7627,8 @@ return sim_cancel (&sim_step_unit);
 
 void int_handler (int sig)
 {
+if (sig == SIGTERM && sim_panel_only)
+    sim_exit_requested = TRUE;
 stop_cpu = TRUE;
 return;
 }
@@ -8518,20 +8545,23 @@ static void *read_line_thread_start(void *args)
 // read_line_p(): original function, interface to existing code.
 char *read_line_p(const char *prompt, char *cptr, int32 size, FILE *stream)
 {
-    const char *panel_only = getenv("PIDP_REALCONS_PANEL_ONLY");
-    if (panel_only && strcmp(panel_only, "1") == 0 && (!prompt || stream != stdin))
+    if (sim_exit_requested)
+        return NULL;
+    if (sim_panel_only && (!prompt || stream != stdin))
         return read_line_p_body(prompt, cptr, size, stream);
-    if (prompt && stream == stdin && panel_only && strcmp(panel_only, "1") == 0) {
+    if (prompt && stream == stdin && sim_panel_only) {
         if (!cpu_realcons->connected || size <= 0) {
             fprintf(stderr, "panel-only console requires a connected panel\n");
             return NULL;
         }
         printf("PANEL_CONSOLE_READY cpu=halted\n%s", prompt);
         fflush(stdout);
-        while (!stop_cpu && cpu_realcons->connected) {
+        while (!sim_exit_requested && !stop_cpu && cpu_realcons->connected) {
             char *command;
             size_t length;
             realcons_service(cpu_realcons, 0);
+            if (sim_exit_requested)
+                break;
             command = realcons_simh_get_cmd(cpu_realcons);
             if (command && *command) {
                 length = strcspn(command, "\r\n");

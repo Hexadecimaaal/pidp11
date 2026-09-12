@@ -37,6 +37,8 @@
 #ifndef SIM_SCP_H_
 #define SIM_SCP_H_     0
 
+#include <signal.h>
+
 #ifdef  __cplusplus
 extern "C" {
 #endif
@@ -353,7 +355,7 @@ extern t_bool sim_processing_event;                     /* Called from sim_proce
 extern char *sim_prompt;                                /* prompt string */
 extern const char *sim_savename;                        /* Simulator Name used in Save/Restore files */
 extern t_value *sim_eval;
-extern volatile t_bool stop_cpu;
+extern volatile sig_atomic_t stop_cpu;
 extern uint32 sim_brk_types;                            /* breakpoint info */
 extern uint32 sim_brk_dflt;
 extern uint32 sim_brk_summ;
