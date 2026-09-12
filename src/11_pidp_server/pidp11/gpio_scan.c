@@ -218,6 +218,35 @@ int pidp_gpio_scan_rows(struct pidp_gpio_v2 *backend,
   return 0;
 }
 
+int pidp_gpio_scan_input_row(struct pidp_gpio_v2 *backend, unsigned int row,
+    volatile uint32_t switches[PIDP_GPIO_V2_SWITCH_ROWS],
+    struct pidp_gpio_rotary *rotary, int knobs[2],
+    pidp_gpio_delay delay, void *context)
+{
+  uint32_t physical_bits;
+  uint32_t published_bits;
+
+  if (backend == NULL || switches == NULL || rotary == NULL || knobs == NULL
+      || row >= PIDP_GPIO_V2_SWITCH_ROWS)
+    return scan_failure(backend, EINVAL);
+  if (delay == NULL)
+    delay = interruptible_delay;
+  if (pidp_gpio_v2_select_switch(backend, row) < 0)
+    return scan_failure(backend, errno);
+  /* full rows on VisionFive 2 still misread at 2ms with the LEDs active. */
+  if (delay_for(context, delay, 3000000L) < 0)
+    return scan_failure(backend, errno);
+  if (pidp_gpio_v2_read_switches(backend, &physical_bits) < 0)
+    return scan_failure(backend, errno);
+  published_bits = physical_bits & PIDP_GPIO_V2_LED_MASK;
+  if (row == 2)
+    update_rotary(rotary, knobs, &published_bits);
+  switches[row] = published_bits;
+  if (pidp_gpio_v2_idle(backend) < 0)
+    return scan_failure(backend, errno);
+  return 0;
+}
+
 int pidp_gpio_scan_inputs(struct pidp_gpio_v2 *backend,
     volatile uint32_t switches[PIDP_GPIO_V2_SWITCH_ROWS],
     struct pidp_gpio_rotary *rotary, int knobs[2],
@@ -225,30 +254,10 @@ int pidp_gpio_scan_inputs(struct pidp_gpio_v2 *backend,
 {
   unsigned int row;
 
-  if (backend == NULL || switches == NULL || rotary == NULL || knobs == NULL)
-    return scan_failure(backend, EINVAL);
-  if (delay == NULL)
-    delay = interruptible_delay;
   for (row = 0; row < PIDP_GPIO_V2_SWITCH_ROWS; ++row) {
-    uint32_t physical_bits;
-    uint32_t published_bits;
-
-    if (pidp_gpio_v2_select_switch(backend, row) < 0)
-      return scan_failure(backend, errno);
-    /* full rows on VisionFive 2 still misread at 1ms; allow 5ms to settle. */
-    if (delay_for(context, delay, 5000000L) < 0)
-      return scan_failure(backend, errno);
-    if (pidp_gpio_v2_read_switches(backend, &physical_bits) < 0)
-      return scan_failure(backend, errno);
-    published_bits = physical_bits & PIDP_GPIO_V2_LED_MASK;
-    if (row == 2) {
-      uint32_t rotary_bits = published_bits;
-      update_rotary(rotary, knobs, &rotary_bits);
-      published_bits = rotary_bits;
-    }
-    switches[row] = published_bits;
-    if (pidp_gpio_v2_idle(backend) < 0)
-      return scan_failure(backend, errno);
+    if (pidp_gpio_scan_input_row(backend, row, switches, rotary, knobs,
+        delay, context) < 0)
+      return -1;
   }
   return 0;
 }

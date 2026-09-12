@@ -650,6 +650,152 @@ static int row_pattern_case(const char *name,
   return 1;
 }
 
+static int input_row_case(void)
+{
+  struct pidp_fixture_inputs inputs;
+  struct pidp_fixture_trace trace;
+  struct pidp_gpio_v2 backend;
+  struct port_fake fake;
+  struct pidp_gpio_rotary rotary = {{1, 2}};
+  uint32_t switches[PIDP_GPIO_V2_SWITCH_ROWS] =
+      {UINT32_C(0x111), UINT32_C(0x222), UINT32_C(0x333)};
+  int knobs[2] = {5, 2};
+  int index = 0;
+  size_t i;
+
+  memset(&inputs, 0, sizeof(inputs));
+  memset(&trace, 0, sizeof(trace));
+  inputs.values[1][0] = UINT32_C(0xa5a);
+  if (open_port(&fake, &backend, &trace, &inputs, &index) < 0)
+    return 0;
+  if (pidp_gpio_scan_input_row(&backend, 1, switches, &rotary, knobs,
+      port_delay, &fake) < 0
+      || pidp_gpio_v2_close(&backend) < 0) {
+    fprintf(stderr, "input row scan failed\n");
+    (void)pidp_gpio_v2_close(&backend);
+    return 0;
+  }
+  pidp_fixture_record_final(&trace, &fake.state);
+  if (!safe_trace("input row", &trace)
+      || trace.sample_count != 1 || trace.interval_count != 1
+      || trace.samples[0].row != 1
+      || trace.samples[0].physical_bits != UINT32_C(0xa5a)
+      || switches[0] != UINT32_C(0x111)
+      || switches[1] != UINT32_C(0xa5a)
+      || switches[2] != UINT32_C(0x333)
+      || rotary.last_code[0] != 1 || rotary.last_code[1] != 2
+      || knobs[0] != 5 || knobs[1] != 2
+      || fake.request_open || fake.chip_open
+      || trace.final_state.switch_output != 0
+      || trace.final_state.led_high != 0
+      || trace.final_state.col_output != 0) {
+    fprintf(stderr, "input row changed an unselected row or rotary state\n");
+    return 0;
+  }
+  for (i = 0; i < trace.interval_count; ++i) {
+    const struct pidp_fixture_interval *interval = &trace.intervals[i];
+    const struct pidp_fixture_snapshot *state = &interval->state;
+
+    if (interval->duration_ns != 3000000u
+        || state->led_output != ((1u << PIDP_GPIO_V2_LED_ROWS) - 1u)
+        || state->led_high != 0 || state->col_output != 0
+        || state->switch_output != (1u << 1)
+        || (state->switch_high & state->switch_output) != 0) {
+      fprintf(stderr, "input row selected an unsafe switch state\n");
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static int input_row_encoder_case(void)
+{
+  struct pidp_fixture_inputs inputs;
+  struct pidp_fixture_trace trace;
+  struct pidp_gpio_v2 backend;
+  struct port_fake fake;
+  struct pidp_gpio_rotary rotary = {{3, 3}};
+  uint32_t switches[PIDP_GPIO_V2_SWITCH_ROWS] =
+      {UINT32_C(0x111), UINT32_C(0x222), UINT32_C(0x333)};
+  int knobs[2] = {1, 1};
+  int index = 0;
+
+  memset(&inputs, 0, sizeof(inputs));
+  memset(&trace, 0, sizeof(trace));
+  inputs.values[2][0] = UINT32_C(0x102);
+  inputs.values[2][1] = UINT32_C(0x303);
+  if (open_port(&fake, &backend, &trace, &inputs, &index) < 0)
+    return 0;
+  if (pidp_gpio_scan_input_row(&backend, 2, switches, &rotary, knobs,
+      port_delay, &fake) < 0
+      || pidp_gpio_scan_input_row(&backend, 2, switches, &rotary, knobs,
+          port_delay, &fake) < 0
+      || pidp_gpio_v2_close(&backend) < 0) {
+    fprintf(stderr, "input row encoder scan failed\n");
+    (void)pidp_gpio_v2_close(&backend);
+    return 0;
+  }
+  pidp_fixture_record_final(&trace, &fake.state);
+  if (!safe_trace("input row encoder", &trace)
+      || trace.sample_count != 2 || trace.interval_count != 2
+      || trace.samples[0].row != 2 || trace.samples[1].row != 2
+      || switches[0] != UINT32_C(0x111)
+      || switches[1] != UINT32_C(0x222)
+      || switches[2] != UINT32_C(0x103)
+      || rotary.last_code[0] != 3 || rotary.last_code[1] != 3
+      || knobs[0] != 2 || knobs[1] != 1
+      || fake.request_open || fake.chip_open) {
+    fprintf(stderr, "input row encoder state was not updated\n");
+    return 0;
+  }
+  if (trace.intervals[0].duration_ns != 3000000u
+      || trace.intervals[1].duration_ns != 3000000u
+      || trace.intervals[0].state.switch_output != (1u << 2)
+      || trace.intervals[1].state.switch_output != (1u << 2)) {
+    fprintf(stderr, "input row encoder used the wrong waveform\n");
+    return 0;
+  }
+  return 1;
+}
+
+static int input_row_invalid_case(void)
+{
+  struct pidp_fixture_inputs inputs;
+  struct pidp_fixture_trace trace;
+  struct pidp_gpio_v2 backend;
+  struct port_fake fake;
+  struct pidp_gpio_rotary rotary = {{3, 3}};
+  uint32_t switches[PIDP_GPIO_V2_SWITCH_ROWS] =
+      {UINT32_C(0x111), UINT32_C(0x222), UINT32_C(0x333)};
+  int knobs[2] = {1, 1};
+  int index = 0;
+
+  memset(&inputs, 0, sizeof(inputs));
+  memset(&trace, 0, sizeof(trace));
+  if (open_port(&fake, &backend, &trace, &inputs, &index) < 0)
+    return 0;
+  if (pidp_gpio_scan_input_row(&backend, PIDP_GPIO_V2_SWITCH_ROWS,
+      switches, &rotary, knobs, port_delay, &fake) >= 0
+      || errno != EINVAL) {
+    fprintf(stderr, "input row bound was not rejected\n");
+    (void)pidp_gpio_v2_close(&backend);
+    return 0;
+  }
+  pidp_fixture_record_final(&trace, &fake.state);
+  if (!safe_trace("input row invalid", &trace)
+      || trace.sample_count != 0 || trace.interval_count != 0
+      || switches[0] != UINT32_C(0x111)
+      || switches[1] != UINT32_C(0x222)
+      || switches[2] != UINT32_C(0x333)
+      || fake.request_open || fake.chip_open
+      || fake.state.led_high != 0 || fake.state.col_output != 0
+      || fake.state.switch_output != 0) {
+    fprintf(stderr, "invalid input row did not safely close\n");
+    return 0;
+  }
+  return 1;
+}
+
 static int input_scan_case(void)
 {
   struct pidp_fixture_inputs inputs;
@@ -710,7 +856,7 @@ static int input_scan_case(void)
   for (i = 0; i < trace.interval_count; ++i) {
     const struct pidp_fixture_interval *interval = &trace.intervals[i];
     const struct pidp_fixture_snapshot *state = &interval->state;
-    if (interval->duration_ns != 5000000u
+    if (interval->duration_ns != 3000000u
         || state->led_output != ((1u << PIDP_GPIO_V2_LED_ROWS) - 1u)
         || state->led_high != 0 || state->col_output != 0
         || state->switch_output != (1u << (i % PIDP_GPIO_V2_SWITCH_ROWS))
@@ -774,13 +920,16 @@ static int input_failure_case(unsigned int fail_call, int interrupted)
   struct port_fake fake;
   struct pidp_gpio_rotary rotary = {{3, 3}};
   struct failing_delay failure = {0, fail_call, &fake};
-  uint32_t switches[PIDP_GPIO_V2_SWITCH_ROWS] = {0};
+  uint32_t switches[PIDP_GPIO_V2_SWITCH_ROWS] =
+      {UINT32_C(0xaaa), UINT32_C(0xbbb), UINT32_C(0xccc)};
   int knobs[2] = {1, 1};
   int index = 0;
   int expected_error = interrupted ? EINTR : ETIMEDOUT;
 
   memset(&inputs, 0, sizeof(inputs));
   memset(&trace, 0, sizeof(trace));
+  inputs.values[0][0] = UINT32_C(0x155);
+  inputs.values[1][0] = UINT32_C(0x2aa);
   memset(&backend, 0, sizeof(backend));
   if (open_port(&fake, &backend, &trace, &inputs, &index) < 0)
     return 0;
@@ -792,7 +941,14 @@ static int input_failure_case(unsigned int fail_call, int interrupted)
     return 0;
   }
   if (fake.request_open || fake.chip_open
+      || trace.sample_count != (fail_call == 1 ? 0 : 1)
       || trace.interval_count != fail_call - 1u
+      || switches[0] != (fail_call == 1 ? UINT32_C(0xaaa)
+          : UINT32_C(0x155))
+      || switches[1] != UINT32_C(0xbbb)
+      || switches[2] != UINT32_C(0xccc)
+      || rotary.last_code[0] != 3 || rotary.last_code[1] != 3
+      || knobs[0] != 1 || knobs[1] != 1
       || fake.state.led_high != 0 || fake.state.col_output != 0
       || fake.state.switch_output != 0 || !safe_trace("input failure", &trace)) {
     fprintf(stderr, "input failure did not idle and release\n");
@@ -895,7 +1051,8 @@ int main(void)
       || !single_pattern_case("single-dense", FIXTURE_ALL_COLS)
       || !single_pattern_case("single-mixed", UINT32_C(0xa55))
       || !row_pattern_case("rows-mixed", row_patterns)
-      || !input_scan_case())
+      || !input_row_case() || !input_row_encoder_case()
+      || !input_row_invalid_case() || !input_scan_case())
     return 1;
   if (!single_failure_case(0, 0) || !single_failure_case(1, 0)
       || !single_failure_case(2, 0) || !single_failure_case(144, 0)

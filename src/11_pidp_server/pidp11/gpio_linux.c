@@ -18,6 +18,14 @@ extern int knobValue[2];
 static struct pidp_gpio_v2 gpio_backend;
 static struct pidp_gpio_rotary gpio_rotary = {{3, 3}};
 static int gpio_backend_open;
+static unsigned int demo_input_row;
+static int demo_inputs_initialized;
+
+static void reset_demo_input_schedule(void)
+{
+  demo_input_row = 0;
+  demo_inputs_initialized = 0;
+}
 
 static void report_gpio_error(const char *operation)
 {
@@ -55,6 +63,7 @@ int pidp_gpio_linux_init(void)
   }
   gpio_rotary.last_code[0] = 3;
   gpio_rotary.last_code[1] = 3;
+  reset_demo_input_schedule();
   gpio_backend_open = 1;
   return 0;
 }
@@ -69,6 +78,8 @@ int pidp_gpio_linux_demo_init(void)
   int fd;
   int error = 0;
   unsigned int i;
+
+  reset_demo_input_schedule();
 
   if (path == NULL || offsets == NULL) {
     errno = EINVAL;
@@ -132,6 +143,7 @@ int pidp_gpio_linux_shutdown(void)
   result = pidp_gpio_v2_close(&gpio_backend);
   error = errno;
   gpio_backend_open = 0;
+  reset_demo_input_schedule();
   if (result < 0) {
     errno = error != 0 ? error : EIO;
     report_gpio_error("close");
@@ -174,20 +186,34 @@ int pidp_gpio_linux_demo_row_frame(
   return 0;
 }
 
-
 int pidp_gpio_linux_demo_read_inputs(void)
 {
+  int result;
+
   if (!gpio_backend_open) {
     errno = EBADF;
     report_gpio_error("demo input scan before initialization");
     return -1;
   }
-  if (pidp_gpio_scan_inputs(&gpio_backend, gpio_switchstatus,
-      &gpio_rotary, knobValue, NULL, NULL) < 0) {
+  if (demo_inputs_initialized) {
+    result = pidp_gpio_scan_input_row(&gpio_backend, demo_input_row,
+        gpio_switchstatus, &gpio_rotary, knobValue, NULL, NULL);
+  } else {
+    result = pidp_gpio_scan_inputs(&gpio_backend, gpio_switchstatus,
+        &gpio_rotary, knobValue, NULL, NULL);
+  }
+  if (result < 0) {
     gpio_backend_open = 0;
+    reset_demo_input_schedule();
     if (errno != EINTR)
       report_gpio_error("demo input scan");
     return -1;
+  }
+  if (!demo_inputs_initialized) {
+    demo_inputs_initialized = 1;
+    demo_input_row = 0;
+  } else {
+    demo_input_row = (demo_input_row + 1u) % PIDP_GPIO_V2_SWITCH_ROWS;
   }
   return 0;
 }
