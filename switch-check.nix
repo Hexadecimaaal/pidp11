@@ -76,18 +76,37 @@ stdenv.mkDerivation {
     expect_cli_failure --seconds 86401
     expect_cli_failure --seconds not-a-number
     expect_cli_failure --chip
+    expect_cli_failure --settle-us
+    expect_cli_failure --settle-us --inspect
+    expect_cli_failure --settle-us ""
+    expect_cli_failure --settle-us not-a-number
+    expect_cli_failure --settle-us +100
+    expect_cli_failure --settle-us -1
+    expect_cli_failure --settle-us " 100"
+    expect_cli_failure --settle-us "100 "
+    expect_cli_failure --settle-us 100us
+    expect_cli_failure --settle-us 0
+    expect_cli_failure --settle-us 100001
+    expect_cli_failure --settle-us 4294967396
 
-    status=0
-    "$out/bin/pidp-switch-monitor" --inspect --chip /dev/null \
-      > inspect.log 2>&1 || status=$?
-    test "$status" -eq 1
-    inspect_output=$(<inspect.log)
-    case "$inspect_output" in
-      *"switch-only monitor"*|*"GPIO_V2_GET_LINE_IOCTL"*)
-        echo "inspect unexpectedly entered acquisition" >&2
-        exit 1
-        ;;
-    esac
+    expect_inspect_failure() {
+      local status=0
+      "$out/bin/pidp-switch-monitor" --inspect --chip /dev/null "$@" \
+        > inspect.log 2>&1 || status=$?
+      test "$status" -eq 1
+      local inspect_output=$(<inspect.log)
+      case "$inspect_output" in
+        *"switch-only monitor"*|*"GPIO_V2_GET_LINE_IOCTL"*)
+          echo "inspect unexpectedly entered acquisition" >&2
+          exit 1
+          ;;
+      esac
+    }
+    expect_inspect_failure
+    expect_inspect_failure --settle-us 1
+    expect_inspect_failure --settle-us 100
+    expect_inspect_failure --settle-us 100000
+    expect_inspect_failure --settle-us 000100
 
     echo "pidp switch monitor CLI checks passed"
     runHook postInstallCheck

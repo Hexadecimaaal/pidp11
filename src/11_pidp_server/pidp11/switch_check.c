@@ -151,7 +151,8 @@ static int monitor_close(void *context, int fd)
 }
 
 /* a partial frame is never published; every selected row is released first. */
-static int scan_switch_frame(struct pidp_gpio_v2 *backend, uint32_t rows[3])
+static int scan_switch_frame(struct pidp_gpio_v2 *backend, uint32_t rows[3],
+    long settle_ns)
 {
   uint32_t sampled[3];
   unsigned int row;
@@ -163,7 +164,7 @@ static int scan_switch_frame(struct pidp_gpio_v2 *backend, uint32_t rows[3])
       return 1;
     if (pidp_gpio_v2_select_switch(backend, row) < 0)
       return -1;
-    result = pause_ns(100000L);
+    result = pause_ns(settle_ns);
     if (result != 0) {
       error = errno;
       if (pidp_gpio_v2_idle(backend) < 0)
@@ -239,8 +240,8 @@ static int report_switches(const char *event, int64_t elapsed, const uint32_t ro
 
 static void usage(FILE *stream)
 {
-  fprintf(stream, "usage: pidp-switch-monitor [--chip PATH] [--seconds 1..86400] [--inspect]\n"
-      "  default: /dev/gpiochip0, 300 seconds; INT/TERM/HUP stop safely\n"
+  fprintf(stream, "usage: pidp-switch-monitor [--chip PATH] [--seconds 1..86400] [--settle-us 1..100000] [--inspect]\n"
+      "  default: /dev/gpiochip0, 300 seconds, 100us settling; INT/TERM/HUP stop safely\n"
       "  --inspect: read-only chip identity and all 21 line owners; no requests\n"
       "  raw rows: 12-bit physical levels (1=high); toggles debounce for 20ms\n"
       "  SR/control values are active-low; rotary AB contacts are unfiltered\n"
@@ -249,20 +250,21 @@ static void usage(FILE *stream)
       "  row2 bits8,9=ADDR A,B; bits10,11=DATA A,B; no rotary position inference\n");
 }
 
-static int parse_seconds(const char *text, unsigned int *seconds)
+static int parse_bounded_uint(const char *text, unsigned int maximum,
+    unsigned int *number)
 {
   unsigned int value = 0;
   const unsigned char *cursor = (const unsigned char *)text;
   if (*cursor == '\0')
     return -1;
   for (; *cursor; ++cursor) {
-    if (*cursor < '0' || *cursor > '9' || value > 8640)
+    if (*cursor < '0' || *cursor > '9' || value > maximum / 10)
       return -1;
     value = value * 10 + (*cursor - '0');
   }
-  if (value == 0 || value > 86400)
+  if (value == 0 || value > maximum)
     return -1;
-  *seconds = value;
+  *number = value;
   return 0;
 }
 
@@ -274,6 +276,8 @@ int main(int argc, char **argv)
   struct switch_filter filter = {0};
   uint32_t rows[3];
   unsigned int seconds = 300;
+  unsigned int settle_us = 100;
+  long settle_ns;
   int inspect = 0;
   int result = 0;
   int i;
@@ -294,7 +298,12 @@ int main(int argc, char **argv)
         return 2;
       }
     } else if (strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
-      if (parse_seconds(argv[++i], &seconds) < 0) {
+      if (parse_bounded_uint(argv[++i], 86400, &seconds) < 0) {
+        usage(stderr);
+        return 2;
+      }
+    } else if (strcmp(argv[i], "--settle-us") == 0 && i + 1 < argc) {
+      if (parse_bounded_uint(argv[++i], 100000, &settle_us) < 0) {
         usage(stderr);
         return 2;
       }
@@ -325,6 +334,7 @@ int main(int argc, char **argv)
       result = 1;
     return stop_signal ? 128 + stop_signal : result;
   }
+  settle_ns = (long)settle_us * 1000L;
   memcpy(mapping.offsets, switch_offsets, sizeof(mapping.offsets));
   if (monotonic_ns(&start) < 0) {
     perror("monotonic clock");
@@ -335,7 +345,8 @@ int main(int argc, char **argv)
     result = 1;
     goto cleanup;
   }
-  puts("switch-only monitor: LEDs held LOW; 100us settling, 5ms idle, 20ms toggle debounce; heartbeat 5s");
+  printf("switch-only monitor: LEDs held LOW; %uus settling, 5ms idle, 20ms toggle debounce; heartbeat 5s\n",
+      settle_us);
   usage(stdout);
   if (fflush(stdout) == EOF || ferror(stdout)) {
     result = 1;
@@ -349,7 +360,7 @@ int main(int argc, char **argv)
     }
     if (now - start >= (int64_t)seconds * INT64_C(1000000000))
       break;
-    i = scan_switch_frame(&backend, rows);
+    i = scan_switch_frame(&backend, rows, settle_ns);
     if (i != 0) {
       if (i < 0) {
         perror("switch scan");
