@@ -88,6 +88,15 @@ stdenv.mkDerivation {
     expect_cli_failure --settle-us 0
     expect_cli_failure --settle-us 100001
     expect_cli_failure --settle-us 4294967396
+    expect_cli_failure --column-batch
+    expect_cli_failure --column-batch ""
+    expect_cli_failure --column-batch not-a-number
+    expect_cli_failure --column-batch +1
+    expect_cli_failure --column-batch " 1"
+    expect_cli_failure --column-batch "1 "
+    expect_cli_failure --column-batch 0
+    expect_cli_failure --column-batch 13
+    expect_cli_failure --column-batch 4294967296
 
     expect_inspect_failure() {
       local status=0
@@ -107,6 +116,8 @@ stdenv.mkDerivation {
     expect_inspect_failure --settle-us 100
     expect_inspect_failure --settle-us 100000
     expect_inspect_failure --settle-us 000100
+    expect_inspect_failure --column-batch 1
+    expect_inspect_failure --column-batch 12
 
     echo "pidp switch monitor CLI checks passed"
     runHook postInstallCheck

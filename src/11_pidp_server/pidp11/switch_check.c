@@ -151,8 +151,8 @@ static int monitor_close(void *context, int fd)
 }
 
 /* a partial frame is never published; every selected row is released first. */
-static int scan_switch_frame(struct pidp_gpio_v2 *backend, uint32_t rows[3],
-    long settle_ns)
+static int scan_switch_frame_full(struct pidp_gpio_v2 *backend,
+    uint32_t rows[3], long settle_ns)
 {
   uint32_t sampled[3];
   unsigned int row;
@@ -180,6 +180,68 @@ static int scan_switch_frame(struct pidp_gpio_v2 *backend, uint32_t rows[3],
     return 1;
   memcpy(rows, sampled, sizeof(sampled));
   return 0;
+}
+
+static int scan_switch_frame_grouped(struct pidp_gpio_v2 *backend,
+    uint32_t rows[3], long settle_ns, unsigned int column_batch)
+{
+  uint32_t sampled[3] = {0};
+  unsigned int row;
+  unsigned int column;
+  int selected = 0;
+
+  for (row = 0; row < PIDP_GPIO_V2_SWITCH_ROWS; ++row) {
+    for (column = 0; column < PIDP_GPIO_V2_COLS;) {
+      unsigned int group_columns = PIDP_GPIO_V2_COLS - column;
+      uint32_t column_mask;
+      uint32_t physical_bits;
+      int result;
+      int error;
+
+      if (group_columns > column_batch)
+        group_columns = column_batch;
+      if (stop_signal) {
+        if (selected && pidp_gpio_v2_idle(backend) < 0)
+          return -1;
+        return 1;
+      }
+      column_mask = ((UINT32_C(1) << group_columns) - UINT32_C(1))
+          << column;
+      if (pidp_gpio_v2_select_switch_columns(backend, row, column_mask) < 0)
+        return -1;
+      selected = 1;
+      result = pause_ns(settle_ns);
+      if (result != 0) {
+        error = errno;
+        if (pidp_gpio_v2_idle(backend) < 0)
+          return -1;
+        selected = 0;
+        errno = error;
+        return result;
+      }
+      if (pidp_gpio_v2_read_switches(backend, &physical_bits) < 0)
+        return -1;
+      sampled[row] |= physical_bits & column_mask;
+      column += group_columns;
+      if (column >= PIDP_GPIO_V2_COLS) {
+        if (pidp_gpio_v2_idle(backend) < 0)
+          return -1;
+        selected = 0;
+      }
+    }
+  }
+  if (stop_signal)
+    return 1;
+  memcpy(rows, sampled, sizeof(sampled));
+  return 0;
+}
+
+static int scan_switch_frame(struct pidp_gpio_v2 *backend, uint32_t rows[3],
+    long settle_ns, unsigned int column_batch)
+{
+  if (column_batch == PIDP_GPIO_V2_COLS)
+    return scan_switch_frame_full(backend, rows, settle_ns);
+  return scan_switch_frame_grouped(backend, rows, settle_ns, column_batch);
 }
 
 /* debounce each toggle independently; encoder contacts remain raw, not positions. */
@@ -240,8 +302,8 @@ static int report_switches(const char *event, int64_t elapsed, const uint32_t ro
 
 static void usage(FILE *stream)
 {
-  fprintf(stream, "usage: pidp-switch-monitor [--chip PATH] [--seconds 1..86400] [--settle-us 1..100000] [--inspect]\n"
-      "  default: /dev/gpiochip0, 300 seconds, 100us settling; INT/TERM/HUP stop safely\n"
+  fprintf(stream, "usage: pidp-switch-monitor [--chip PATH] [--seconds 1..86400] [--settle-us 1..100000] [--column-batch 1..12] [--inspect]\n"
+      "  default: /dev/gpiochip0, 300 seconds, 100us settling, 12-column batch; INT/TERM/HUP stop safely\n"
       "  --inspect: read-only chip identity and all 21 line owners; no requests\n"
       "  raw rows: 12-bit physical levels (1=high); toggles debounce for 20ms\n"
       "  SR/control values are active-low; rotary AB contacts are unfiltered\n"
@@ -275,15 +337,24 @@ int main(int argc, char **argv)
   const struct pidp_gpio_v2_ops ops = {checked_open, monitor_ioctl, monitor_close};
   struct switch_filter filter = {0};
   uint32_t rows[3];
+  uint32_t previous_raw[3];
+  uint32_t raw_and[3] = {SWITCH_MASK, SWITCH_MASK, SWITCH_MASK};
+  uint32_t raw_or[3] = {0};
   unsigned int seconds = 300;
   unsigned int settle_us = 100;
+  unsigned int column_batch = PIDP_GPIO_V2_COLS;
   long settle_ns;
   int inspect = 0;
   int result = 0;
+  int have_previous_raw = 0;
   int i;
+  uint64_t completed_frames = 0;
   int64_t start;
   int64_t now;
+  unsigned int row;
   int64_t heartbeat = 0;
+  uint64_t raw_frame_changes = 0;
+  uint64_t debounced_reports = 0;
 
   for (i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--help") == 0) {
@@ -304,6 +375,11 @@ int main(int argc, char **argv)
       }
     } else if (strcmp(argv[i], "--settle-us") == 0 && i + 1 < argc) {
       if (parse_bounded_uint(argv[++i], 100000, &settle_us) < 0) {
+        usage(stderr);
+        return 2;
+      }
+    } else if (strcmp(argv[i], "--column-batch") == 0 && i + 1 < argc) {
+      if (parse_bounded_uint(argv[++i], PIDP_GPIO_V2_COLS, &column_batch) < 0) {
         usage(stderr);
         return 2;
       }
@@ -345,8 +421,8 @@ int main(int argc, char **argv)
     result = 1;
     goto cleanup;
   }
-  printf("switch-only monitor: LEDs held LOW; %uus settling, 5ms idle, 20ms toggle debounce; heartbeat 5s\n",
-      settle_us);
+  printf("switch-only monitor: LEDs held LOW; column_batch=%u, %uus settling, 5ms idle, 20ms toggle debounce; heartbeat 5s\n",
+      column_batch, settle_us);
   usage(stdout);
   if (fflush(stdout) == EOF || ferror(stdout)) {
     result = 1;
@@ -360,7 +436,7 @@ int main(int argc, char **argv)
     }
     if (now - start >= (int64_t)seconds * INT64_C(1000000000))
       break;
-    i = scan_switch_frame(&backend, rows, settle_ns);
+    i = scan_switch_frame(&backend, rows, settle_ns, column_batch);
     if (i != 0) {
       if (i < 0) {
         perror("switch scan");
@@ -368,10 +444,22 @@ int main(int argc, char **argv)
       }
       break;
     }
+    for (row = 0; row < PIDP_GPIO_V2_SWITCH_ROWS; ++row) {
+      raw_and[row] &= rows[row];
+      raw_or[row] |= rows[row];
+    }
+    ++completed_frames;
     if (monotonic_ns(&now) < 0) {
       perror("monotonic clock");
       result = 1;
       break;
+    }
+    if (!have_previous_raw) {
+      memcpy(previous_raw, rows, sizeof(previous_raw));
+      have_previous_raw = 1;
+    } else if (memcmp(previous_raw, rows, sizeof(previous_raw)) != 0) {
+      memcpy(previous_raw, rows, sizeof(previous_raw));
+      ++raw_frame_changes;
     }
     i = filter_switches(&filter, rows, now);
     if (i || now - heartbeat >= HEARTBEAT_NS) {
@@ -381,6 +469,8 @@ int main(int argc, char **argv)
         result = 1;
         break;
       }
+      if (i)
+        ++debounced_reports;
       if (now - heartbeat >= HEARTBEAT_NS || heartbeat == 0)
         heartbeat = now;
     }
@@ -400,6 +490,12 @@ cleanup:
     perror("gpio idle/close");
     result = 1;
   }
+  fprintf(stderr, "switch monitor statistics: completed_frames=%" PRIu64
+      " raw_frame_changes=%" PRIu64 " debounced_reports=%" PRIu64
+      " raw_and=%03" PRIx32 ",%03" PRIx32 ",%03" PRIx32
+      " raw_or=%03" PRIx32 ",%03" PRIx32 ",%03" PRIx32 "\n",
+      completed_frames, raw_frame_changes, debounced_reports,
+      raw_and[0], raw_and[1], raw_and[2], raw_or[0], raw_or[1], raw_or[2]);
   fprintf(stderr, "switch monitor stopped: %s%s\n",
       stop_signal ? "signal" : result ? "error" : "timeout",
       result ? " (error; electrical state not guaranteed)" : " (request released)");

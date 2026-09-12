@@ -84,6 +84,15 @@ int pidp_gpio_v2_select_switch(struct pidp_gpio_v2 *backend,
 int pidp_gpio_v2_read_switches(struct pidp_gpio_v2 *backend,
     uint32_t *physical_bits);
 
+/* diagnostic selection: column_mask is nonzero and limited to the 12 columns.
+ * a full mask uses the unchanged selection above. a subset first enters idle,
+ * then keeps only sampled columns and inactive switch rows input-pull-up;
+ * other columns are input-bias-disabled. led rows and the selected row remain
+ * output-low. read still returns all columns; callers must mask sampled bits.
+ */
+int pidp_gpio_v2_select_switch_columns(struct pidp_gpio_v2 *backend,
+    unsigned int row, uint32_t column_mask);
+
 /* blank only lowers led rows, preserving columns and switch selection.
  * idle first blanks, then restores the initial directions and values.
  */

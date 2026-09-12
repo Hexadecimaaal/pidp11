@@ -13,7 +13,7 @@
 #if PIDP_GPIO_V2_LINES > GPIO_V2_LINES_MAX
 #error "pidp gpio mapping exceeds gpio v2 request capacity"
 #endif
-#if 2 > GPIO_V2_LINE_NUM_ATTRS_MAX
+#if 3 > GPIO_V2_LINE_NUM_ATTRS_MAX
 #error "pidp gpio configuration exceeds gpio v2 attribute capacity"
 #endif
 
@@ -265,6 +265,30 @@ static int switch_config(struct gpio_v2_line_config *config,
       output_mask);
 }
 
+static int switch_columns_config(struct gpio_v2_line_config *config,
+    unsigned int row, uint32_t column_mask)
+{
+  __u64 row_mask = UINT64_C(1)
+      << (PIDP_GPIO_V2_LED_ROWS + PIDP_GPIO_V2_COLS + row);
+  __u64 output_mask = PIDP_GPIO_V2_LED_REQUEST_MASK | row_mask;
+  __u64 pullup_mask = ((__u64)column_mask << PIDP_GPIO_V2_LED_ROWS)
+      | (PIDP_GPIO_V2_SWITCH_REQUEST_MASK & ~row_mask);
+  int result;
+
+  memset(config, 0, sizeof(*config));
+  config->flags = GPIO_V2_LINE_FLAG_INPUT | GPIO_V2_LINE_FLAG_BIAS_DISABLED;
+  result = add_attribute(config, GPIO_V2_LINE_ATTR_ID_FLAGS,
+      GPIO_V2_LINE_FLAG_INPUT | GPIO_V2_LINE_FLAG_BIAS_PULL_UP, pullup_mask);
+  if (result != 0)
+    return result;
+  result = add_attribute(config, GPIO_V2_LINE_ATTR_ID_FLAGS,
+      GPIO_V2_LINE_FLAG_OUTPUT, output_mask);
+  if (result != 0)
+    return result;
+  return add_attribute(config, GPIO_V2_LINE_ATTR_ID_OUTPUT_VALUES, 0,
+      output_mask);
+}
+
 static int apply_config(struct pidp_gpio_v2 *backend,
     const struct gpio_v2_line_config *config)
 {
@@ -475,6 +499,34 @@ int pidp_gpio_v2_select_switch(struct pidp_gpio_v2 *backend,
     return fail_live(backend, error);
   }
   error = switch_config(&config, row);
+  if (error < 0)
+    return fail_live(backend, -error);
+  if (apply_config(backend, &config) < 0) {
+    error = errno;
+    return fail_live(backend, error);
+  }
+  backend->mode = PIDP_GPIO_V2_MODE_SWITCH;
+  return 0;
+}
+
+int pidp_gpio_v2_select_switch_columns(struct pidp_gpio_v2 *backend,
+    unsigned int row, uint32_t column_mask)
+{
+  struct gpio_v2_line_config config;
+  int error;
+
+  if (backend == NULL)
+    return fail_return(EINVAL);
+  if (row >= PIDP_GPIO_V2_SWITCH_ROWS || column_mask == 0
+      || (column_mask & ~PIDP_GPIO_V2_LED_MASK) != 0)
+    return fail_live(backend, EINVAL);
+  if (column_mask == PIDP_GPIO_V2_LED_MASK)
+    return pidp_gpio_v2_select_switch(backend, row);
+
+  /* release driven columns and any selected row before changing subset bias. */
+  if (pidp_gpio_v2_idle(backend) < 0)
+    return -1;
+  error = switch_columns_config(&config, row, column_mask);
   if (error < 0)
     return fail_live(backend, -error);
   if (apply_config(backend, &config) < 0) {

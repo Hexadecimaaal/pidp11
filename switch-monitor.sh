@@ -12,6 +12,7 @@ if [ "$("$coreutils/id" -u)" -ne 0 ]; then
 fi
 seconds=${1:-600}
 settle_us=${PIDP_SWITCH_SETTLE_US:-100}
+column_batch=${PIDP_SWITCH_COLUMN_BATCH:-12}
 if [ "$#" -gt 1 ]; then
   printf 'usage: %s [seconds]\n' "$0" >&2
   exit 2
@@ -94,11 +95,11 @@ trap 'exit 143' INT TERM HUP
 restore_needed=1
 printf '%s\n' 10060000.spi > "$driver/unbind"
 [ ! -e "$driver/10060000.spi" ]
-printf 'SWITCH_CHECK_START seconds=%s settle_us=%s leds=off flash=untouched\n' "$seconds" "$settle_us"
+printf 'SWITCH_CHECK_START seconds=%s settle_us=%s column_batch=%s leds=off flash=untouched\n' "$seconds" "$settle_us" "$column_batch"
 # defer exit until the child's PID is recorded so cleanup cannot miss it.
 stop_requested=0
 trap 'stop_requested=1' INT TERM HUP
-"$monitor" --seconds "$seconds" --settle-us "$settle_us" &
+"$monitor" --seconds "$seconds" --settle-us "$settle_us" --column-batch "$column_batch" &
 child_pid=$!
 trap 'exit 143' INT TERM HUP
 if [ "$stop_requested" -ne 0 ]; then

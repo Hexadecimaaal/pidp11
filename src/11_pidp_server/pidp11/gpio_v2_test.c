@@ -284,6 +284,30 @@ static void assert_switch_config(const struct gpio_v2_line_config *config,
   assert(config->attrs[1].mask == output_mask);
 }
 
+static void assert_switch_columns_config(
+    const struct gpio_v2_line_config *config, unsigned int row,
+    uint32_t column_mask)
+{
+  uint64_t row_mask = UINT64_C(1) << (18 + row);
+  uint64_t output_mask = TEST_LED_MASK | row_mask;
+  uint64_t pullup_mask = ((uint64_t)column_mask << 6)
+      | (TEST_SWITCH_MASK & ~row_mask);
+
+  assert(config->flags == (GPIO_V2_LINE_FLAG_INPUT
+      | GPIO_V2_LINE_FLAG_BIAS_DISABLED));
+  assert(config->num_attrs == 3);
+  assert(config->attrs[0].attr.id == GPIO_V2_LINE_ATTR_ID_FLAGS);
+  assert(config->attrs[0].attr.flags == (GPIO_V2_LINE_FLAG_INPUT
+      | GPIO_V2_LINE_FLAG_BIAS_PULL_UP));
+  assert(config->attrs[0].mask == pullup_mask);
+  assert(config->attrs[1].attr.id == GPIO_V2_LINE_ATTR_ID_FLAGS);
+  assert(config->attrs[1].attr.flags == GPIO_V2_LINE_FLAG_OUTPUT);
+  assert(config->attrs[1].mask == output_mask);
+  assert(config->attrs[2].attr.id == GPIO_V2_LINE_ATTR_ID_OUTPUT_VALUES);
+  assert(config->attrs[2].attr.values == 0);
+  assert(config->attrs[2].mask == output_mask);
+}
+
 static void open_backend(struct pidp_gpio_v2 *backend,
     struct fake_transport *fake)
 {
@@ -568,6 +592,92 @@ static void test_invalid_runtime_arguments(void)
   assert(pidp_gpio_v2_close(&backend) == 0);
 }
 
+static void test_subset_switch_selection(void)
+{
+  struct fake_transport fake;
+  struct pidp_gpio_v2 backend;
+  uint32_t physical_bits = 0;
+  const uint32_t first_mask = UINT32_C(0x005);
+  const uint32_t second_mask = UINT32_C(0xa20);
+  unsigned int values_before;
+  unsigned int configs_before;
+
+  fake_init(&fake);
+  open_backend(&backend, &fake);
+  values_before = fake.values_count;
+  configs_before = fake.config_count;
+  assert(pidp_gpio_v2_select_switch_columns(&backend, 1, first_mask) == 0);
+  assert(fake.values_count == values_before + 1);
+  assert(fake.values[fake.values_count - 1].bits == 0);
+  assert(fake.values[fake.values_count - 1].mask == TEST_LED_MASK);
+  assert(fake.config_count == configs_before + 2);
+  assert_initial_config(&fake.configs[configs_before]);
+  assert_switch_columns_config(&fake.configs[fake.config_count - 1], 1,
+      first_mask);
+
+  fake.input_bits = (UINT64_C(0x5a3) << 6) | (UINT64_C(1) << 1);
+  assert(pidp_gpio_v2_read_switches(&backend, &physical_bits) == 0);
+  assert(physical_bits == UINT32_C(0x5a3));
+
+  values_before = fake.values_count;
+  configs_before = fake.config_count;
+  assert(pidp_gpio_v2_select_switch_columns(&backend, 2, second_mask) == 0);
+  assert(fake.values_count == values_before);
+  assert(fake.config_count == configs_before + 2);
+  assert_initial_config(&fake.configs[configs_before]);
+  assert_switch_columns_config(&fake.configs[fake.config_count - 1], 2,
+      second_mask);
+  assert(pidp_gpio_v2_idle(&backend) == 0);
+  assert_initial_config(&fake.configs[fake.config_count - 1]);
+  assert(pidp_gpio_v2_close(&backend) == 0);
+  assert(fake.request_open == 0);
+}
+
+static void test_subset_switch_failures(void)
+{
+  struct fake_transport fake;
+  struct pidp_gpio_v2 backend;
+
+  fake_init(&fake);
+  open_backend(&backend, &fake);
+  assert(pidp_gpio_v2_select_switch_columns(&backend, 0, 0) == -1);
+  assert(errno == EINVAL);
+  assert(fake.request_open == 0);
+  assert(fake.close_calls == 2);
+  assert(pidp_gpio_v2_close(&backend) == 0);
+
+  fake_init(&fake);
+  open_backend(&backend, &fake);
+  assert(pidp_gpio_v2_select_switch_columns(&backend, 0,
+      UINT32_C(0x1000)) == -1);
+  assert(errno == EINVAL);
+  assert(fake.request_open == 0);
+  assert(fake.close_calls == 2);
+  assert(pidp_gpio_v2_close(&backend) == 0);
+
+  fake_init(&fake);
+  open_backend(&backend, &fake);
+  assert(pidp_gpio_v2_select_switch_columns(&backend,
+      PIDP_GPIO_V2_SWITCH_ROWS, UINT32_C(0x001)) == -1);
+  assert(errno == EINVAL);
+  assert(fake.request_open == 0);
+  assert(fake.close_calls == 2);
+  assert(pidp_gpio_v2_close(&backend) == 0);
+
+  fake_init(&fake);
+  open_backend(&backend, &fake);
+  fake.fail_ioctl_call = fake.ioctl_calls + 3;
+  fake.fail_ioctl_errno = EIO;
+  assert(pidp_gpio_v2_select_switch_columns(&backend, 0, UINT32_C(0x001))
+      == -1);
+  assert(errno == EIO);
+  assert(fake.request_open == 0);
+  assert(fake.close_calls == 2);
+  assert(fake.config_count == 3);
+  assert_initial_config(&fake.configs[fake.config_count - 1]);
+  assert(pidp_gpio_v2_close(&backend) == 0);
+}
+
 static void test_ioctl_failure_and_cleanup(void)
 {
   struct fake_transport fake;
@@ -604,6 +714,8 @@ int main(void)
   test_display_switch_and_idle();
   test_invalid_runtime_arguments();
   test_ioctl_failure_and_cleanup();
+  test_subset_switch_selection();
+  test_subset_switch_failures();
   puts("gpio_v2 fake transport tests passed");
   return 0;
 }
