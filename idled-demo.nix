@@ -26,6 +26,10 @@ let
     coreutils = target.coreutils;
     bash = target.bash;
   };
+  menu_script = pkgs.replaceVars ./panel-menu.sh {
+    bash = target.bash;
+    coreutils = target.coreutils;
+  };
 in
 target.stdenv.mkDerivation {
   pname = "pidp-idled-demo";
@@ -36,6 +40,7 @@ target.stdenv.mkDerivation {
   installPhase = ''
     runHook preInstall
     install -Dm755 ${script} "$out/bin/pidp-idled-demo"
+    install -Dm755 ${menu_script} "$out/bin/pidp-panel-menu"
     install -Dm644 ${./systems/idled/boot.ini} \
       "$out/share/pidp-visionfive2/idled/boot.ini"
     install -Dm644 ${./systems/panel/boot.ini} \

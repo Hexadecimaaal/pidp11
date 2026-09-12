@@ -84,6 +84,7 @@
 #ifdef PIDP_GPIO_V2
 #include "gpio_linux.h"
 #include "panel_actions.h"
+#include "panel_boot.h"
 #endif
 
 char program_info[1024];
@@ -115,9 +116,11 @@ static int demo_previous_knobs[2];
 static int demo_previous_inputs_valid;
 static uint8_t demo_previous_actions;
 static struct panel_actions demo_actions;
+static struct panel_boot demo_boot;
+static const char *demo_boot_request_file;
 static uint32_t demo_sr_stable;
 static uint32_t demo_sr_candidate;
-static struct timespec demo_sr_candidate_since;
+static uint64_t demo_sr_candidate_since;
 static int demo_sr_valid;
 
 static void demo_signal_handler(int signal_number)
@@ -171,30 +174,20 @@ static uint32_t demo_sr_from_inputs(void)
         | (((~high) & UINT32_C(0x3ff)) << 12);
 }
 
-static void demo_update_sr_debounce(void)
+static void demo_update_sr_debounce(uint64_t now_ns)
 {
-    struct timespec now;
     uint32_t value = demo_sr_from_inputs();
 
-    if (clock_gettime(CLOCK_MONOTONIC, &now) < 0) {
-        demo_sr_stable = value;
-        demo_sr_candidate = value;
-        demo_sr_valid = 1;
-        return;
-    }
     if (!demo_sr_valid) {
         demo_sr_stable = value;
         demo_sr_candidate = value;
-        demo_sr_candidate_since = now;
+        demo_sr_candidate_since = now_ns;
         demo_sr_valid = 1;
     } else if (demo_sr_candidate != value) {
         demo_sr_candidate = value;
-        demo_sr_candidate_since = now;
+        demo_sr_candidate_since = now_ns;
     } else if (demo_sr_stable != demo_sr_candidate
-        && ((int64_t)(now.tv_sec - demo_sr_candidate_since.tv_sec)
-            * INT64_C(1000000000)
-            + now.tv_nsec - demo_sr_candidate_since.tv_nsec)
-            >= INT64_C(20000000)) {
+        && now_ns - demo_sr_candidate_since >= PANEL_ACTION_DEBOUNCE_NS) {
         demo_sr_stable = demo_sr_candidate;
     }
 }
@@ -214,6 +207,7 @@ static int demo_service_inputs(void)
     unsigned int i;
     uint8_t actions = 0;
     uint64_t now_ns;
+    uint32_t selection;
     int previous_lamptest = panel_actions_lamptest(&demo_actions,
         opt_demo_inputs_physical);
     uint32_t previous_sr = demo_sr_stable;
@@ -223,9 +217,25 @@ static int demo_service_inputs(void)
         return 0;
     if (pidp_gpio_linux_demo_read_inputs() < 0)
         return -1;
-    demo_update_sr_debounce();
     if (demo_monotonic_now(&now_ns) < 0)
         return -1;
+    demo_update_sr_debounce(now_ns);
+    if (demo_boot_request_file != NULL) {
+        int boot_event = panel_boot_update(&demo_boot,
+            gpio_switchstatus[1], demo_sr_stable, now_ns, &selection);
+
+        if (boot_event < 0)
+            return -1;
+        if (boot_event > 0) {
+            if (!panel_boot_valid_selection(selection)) {
+                fprintf(stderr,
+                    "pidp panel menu: rejected selection %06" PRIo32 "\n",
+                    selection);
+            } else if (panel_boot_publish(demo_boot_request_file, selection) < 0) {
+                perror("pidp panel menu request");
+            }
+        }
+    }
     panel_actions_update(&demo_actions, gpio_switchstatus[2], now_ns);
     actions = panel_actions_value(&demo_actions, opt_demo_front_panel);
     if (demo_previous_inputs_valid && (demo_previous_actions != actions
@@ -1015,6 +1025,7 @@ int main(int argc, char *argv[])
 
 #ifdef PIDP_GPIO_V2
     if (opt_demo) {
+        demo_boot_request_file = getenv("PIDP_BOOT_REQUEST_FILE");
         knobValue[0] = PIDP_GPIO_DEMO_ADDR_KNOB;
         knobValue[1] = opt_demo_front_panel ? 1 : PIDP_GPIO_DEMO_DATA_KNOB;
         if (demo_signal_setup() < 0) {

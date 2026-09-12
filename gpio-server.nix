@@ -52,6 +52,8 @@ stdenv.mkDerivation {
       (server + "/gpio_linux.c")
       (server + "/gpio_linux.h")
       (server + "/gpio_scan.c")
+      (server + "/panel_boot.c")
+      (server + "/panel_boot.h")
       (server + "/gpio_scan.h")
       (server + "/gpio_v2.c")
       (server + "/gpio_v2.h")

@@ -98,12 +98,13 @@ $(BLINKENLIGHT_API_SOURCES.c) $(BLINKENLIGHT_API_SOURCES.h):
 ifeq ($(GPIO_BACKEND),v2)
 SOURCES.h = \
 	main.h gpio.h gpio_linux.h gpio_scan.h gpio_v2.h gpiopattern.h \
+	panel_actions.h panel_boot.h \
 	$(BLINKENLIGHT_SERVER_DIR)/print.h \
 	$(BLINKENLIGHT_API_DIR)/blinkenlight_panels.h \
 	$(BLINKENLIGHT_API_SOURCES.h)
 
 SOURCES.c = \
-	main.c gpiopattern.c gpio_linux.c gpio_scan.c gpio_v2.c \
+	main.c gpiopattern.c gpio_linux.c gpio_scan.c gpio_v2.c panel_boot.c \
 	$(BLINKENLIGHT_SERVER_DIR)/print.c \
 	$(BLINKENLIGHT_API_SOURCES.c)
 else

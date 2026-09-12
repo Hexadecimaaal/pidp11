@@ -40,6 +40,9 @@ stdenv.mkDerivation {
       (server + "/gpio_v2.c")
       (server + "/gpio_v2.h")
       (server + "/panel_actions.h")
+      (server + "/panel_boot.c")
+      (server + "/panel_boot.h")
+      (server + "/panel_boot_test.c")
       (server + "/panel_actions_test.c")
       (server + "/gpio_v2_test.c")
       (server + "/gpio_scan.c")
@@ -82,6 +85,8 @@ stdenv.mkDerivation {
 
     $CC "''${common_flags[@]}" "''${sanitizer_flags[@]}" \
       gpio_v2.c gpio_v2_test.c -o gpio-v2-test
+    $CC "''${common_flags[@]}" "''${sanitizer_flags[@]}" \
+      panel_boot.c panel_boot_test.c -o panel-boot-test
     panel_fixture_flags=("''${common_flags[@]}" "''${sanitizer_flags[@]}"
       "''${fixture_warning_flags[@]}" -DPIDP_GPIO_V2
       -ffunction-sections -fdata-sections
@@ -127,6 +132,9 @@ stdenv.mkDerivation {
       ./panel-actions-test
     ASAN_OPTIONS=detect_leaks=1 \
       UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+      ./panel-boot-test
+    ASAN_OPTIONS=detect_leaks=1 \
+      UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
       ./gpio-waveform-test
     runHook postCheck
   '';
@@ -135,6 +143,7 @@ stdenv.mkDerivation {
     runHook preInstall
     install -Dm755 gpio-v2-test "$out/bin/gpio-v2-test"
     install -Dm755 panel-actions-test "$out/bin/panel-actions-test"
+    install -Dm755 panel-boot-test "$out/bin/panel-boot-test"
     install -Dm755 gpio-waveform-test "$out/bin/gpio-waveform-test"
     runHook postInstall
   '';

@@ -26,12 +26,36 @@ export PATH="$coreutils:@bash@/bin"
 gpio_chip="${PIDP_GPIO_CHIP:-/dev/gpiochip0}"
 gpio_offsets=61,44,47,54,51,50,60,43,55,37,39,56,49,53,52,48,46,59,36,42,38
 program_mode="${PIDP_IDLED_PROGRAM-idled}"
+menu_mode=0
+if [ "${PIDP_BOOT_REQUEST_FILE+x}" = x ]; then
+  menu_mode=1
+fi
 case "$program_mode" in
-  idled) default_scan=single; default_input=fixed ;;
-  panel) default_scan=rows; default_input=physical ;;
-  *) printf '%s\n' 'PIDP_IDLED_PROGRAM must be idled or panel' >&2; exit 2 ;;
+  idled)
+    default_scan=single
+    default_input=fixed
+    ;;
+  panel)
+    default_scan=rows
+    default_input=physical
+    ;;
+  *)
+    printf '%s\n' 'PIDP_IDLED_PROGRAM must be idled or panel' >&2
+    exit 2
+    ;;
 esac
+if [ "$menu_mode" -ne 0 ]; then
+  default_scan=rows
+  default_input=physical
+fi
 scan_mode="${PIDP_IDLED_SCAN-$default_scan}"
+input_mode="${PIDP_IDLED_INPUT-$default_input}"
+if [ "$menu_mode" -ne 0 ]; then
+  if [ "$scan_mode" != rows ] || [ "$input_mode" != physical ]; then
+    printf '%s\n' 'menu mode requires rows and physical inputs' >&2
+    exit 2
+  fi
+fi
 case "$scan_mode" in
   single) server_args=(-D) ;;
   rows) server_args=(-D -R) ;;
@@ -40,7 +64,6 @@ case "$scan_mode" in
     exit 2
     ;;
 esac
-input_mode="${PIDP_IDLED_INPUT-$default_input}"
 case "$input_mode" in
   fixed) ;;
   physical) server_args+=(-S) ;;
@@ -49,7 +72,7 @@ case "$input_mode" in
     exit 2
     ;;
 esac
-if [ "$program_mode" = panel ]; then
+if [ "$program_mode" = panel ] || [ "$menu_mode" -ne 0 ]; then
   if [ "$input_mode" != physical ]; then
     printf '%s\n' 'panel learning mode requires physical inputs' >&2
     exit 2
