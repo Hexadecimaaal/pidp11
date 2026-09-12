@@ -32,4 +32,19 @@ int pidp_gpio_scan_single(struct pidp_gpio_v2 *backend,
     const uint32_t rows[PIDP_GPIO_V2_LED_ROWS],
     pidp_gpio_delay delay, void *context);
 
+/* one unaveraged frame, one complete row at a time, with no switch selection.
+ * all masks are validated before display; delay failures close the request.
+ */
+int pidp_gpio_scan_rows(struct pidp_gpio_v2 *backend,
+    const uint32_t rows[PIDP_GPIO_V2_LED_ROWS],
+    pidp_gpio_delay delay, void *context);
+
+/* sample all switch rows while leaving the request idle between rows.
+ * row two also advances the existing rotary decoder and knob positions.
+ */
+int pidp_gpio_scan_inputs(struct pidp_gpio_v2 *backend,
+    volatile uint32_t switches[PIDP_GPIO_V2_SWITCH_ROWS],
+    struct pidp_gpio_rotary *rotary, int knobs[2],
+    pidp_gpio_delay delay, void *context);
+
 #endif

@@ -25,6 +25,24 @@ export PATH="$coreutils:@bash@/bin"
 
 gpio_chip="${PIDP_GPIO_CHIP:-/dev/gpiochip0}"
 gpio_offsets=61,44,47,54,51,50,60,43,55,37,39,56,49,53,52,48,46,59,36,42,38
+scan_mode="${PIDP_IDLED_SCAN-single}"
+case "$scan_mode" in
+  single) server_args=(-D) ;;
+  rows) server_args=(-D -R) ;;
+  *)
+    printf '%s\n' 'PIDP_IDLED_SCAN must be single or rows' >&2
+    exit 2
+    ;;
+esac
+input_mode="${PIDP_IDLED_INPUT-fixed}"
+case "$input_mode" in
+  fixed) ;;
+  physical) server_args+=(-S) ;;
+  *)
+    printf '%s\n' 'PIDP_IDLED_INPUT must be fixed or physical' >&2
+    exit 2
+    ;;
+esac
 
 if [ "${1:-}" = '--inside' ]; then
   parent_mount=$("$readlink" "/proc/$PPID/ns/mnt")
@@ -238,7 +256,7 @@ while ! "$rpcinfo" -p 127.0.0.1 > /dev/null 2>&1; do
   "$coreutils/sleep" 0.1
 done
 
-"$server" -D > "$server_log" 2>&1 &
+"$server" "${server_args[@]}" > "$server_log" 2>&1 &
 server_pid=$!
 n=0
 while :; do
@@ -295,7 +313,8 @@ if ! kill -0 "$rpc_pid" 2>/dev/null \
 fi
 printf 'IDLED_DEMO_READY panel_frames=changing changing_frames=%s ' "$changing" \
   | "$coreutils/tee" -a "$status_log"
-printf 'rpc_scope=private-network-namespace runtime=%s\n' "$runtime_dir" \
+printf 'rpc_scope=private-network-namespace scan_mode=%s input_mode=%s runtime=%s\n' \
+  "$scan_mode" "$input_mode" "$runtime_dir" \
   | "$coreutils/tee" -a "$status_log"
 
 while kill -0 "$simulator_pid" 2>/dev/null; do

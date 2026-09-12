@@ -157,6 +157,41 @@ int pidp_gpio_linux_demo_frame(
   return 0;
 }
 
+int pidp_gpio_linux_demo_row_frame(
+    const uint32_t rows[PIDP_GPIO_V2_LED_ROWS])
+{
+  if (!gpio_backend_open) {
+    errno = EBADF;
+    report_gpio_error("demo row frame before initialization");
+    return -1;
+  }
+  if (pidp_gpio_scan_rows(&gpio_backend, rows, NULL, NULL) < 0) {
+    gpio_backend_open = 0;
+    if (errno != EINTR)
+      report_gpio_error("demo row scan");
+    return -1;
+  }
+  return 0;
+}
+
+
+int pidp_gpio_linux_demo_read_inputs(void)
+{
+  if (!gpio_backend_open) {
+    errno = EBADF;
+    report_gpio_error("demo input scan before initialization");
+    return -1;
+  }
+  if (pidp_gpio_scan_inputs(&gpio_backend, gpio_switchstatus,
+      &gpio_rotary, knobValue, NULL, NULL) < 0) {
+    gpio_backend_open = 0;
+    if (errno != EINTR)
+      report_gpio_error("demo input scan");
+    return -1;
+  }
+  return 0;
+}
+
 void *blink(void *argument)
 {
   int *terminate = argument;

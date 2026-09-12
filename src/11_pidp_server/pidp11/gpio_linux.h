@@ -14,6 +14,9 @@ int pidp_gpio_linux_shutdown(void);
 int pidp_gpio_linux_demo_init(void);
 int pidp_gpio_linux_demo_frame(
     const uint32_t rows[PIDP_GPIO_V2_LED_ROWS]);
+int pidp_gpio_linux_demo_row_frame(
+    const uint32_t rows[PIDP_GPIO_V2_LED_ROWS]);
+int pidp_gpio_linux_demo_read_inputs(void);
 void *blink(void *argument);
 
 #endif

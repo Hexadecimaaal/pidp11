@@ -134,6 +134,22 @@ stdenv.mkDerivation {
       env PIDP_GPIO_CHIP=/dev/unused-pidp-test-chip \
       PIDP_GPIO_OFFSETS=61,44,47,54,51,50,60,43,55,37,39,56,49,53,52,48,46,59,36,42,38 \
       "$out/bin/pidp1170_blinkenlightd" -D
+    expect_mapping_error "pidp gpio-v2 demo mapping is missing" \
+      env -u PIDP_GPIO_CHIP -u PIDP_GPIO_OFFSETS \
+      "$out/bin/pidp1170_blinkenlightd" -D -R -S
+    for option in -R -S; do
+      status=0
+      timeout 5 "$out/bin/pidp1170_blinkenlightd" "$option" > option.log 2>&1 || status=$?
+      test "$status" -eq 1
+      diagnostic=$(<option.log)
+      case "$diagnostic" in
+        *"requires -D."*|*"require -D."*) ;;
+        *) cat option.log; exit 1 ;;
+      esac
+      case "$diagnostic" in
+        *"IDLED_DEMO_READY"*|*"pidp gpio-v2"*) cat option.log; exit 1 ;;
+      esac
+    done
     echo "pidp gpio-v2 startup checks passed"
     runHook postInstallCheck
   '';

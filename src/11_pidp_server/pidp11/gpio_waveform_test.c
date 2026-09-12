@@ -599,6 +599,129 @@ static int single_pattern_case(const char *name, uint32_t value)
   return 1;
 }
 
+static int row_pattern_case(const char *name,
+    const uint32_t rows[PIDP_GPIO_V2_LED_ROWS])
+{
+  struct pidp_fixture_inputs inputs;
+  struct pidp_fixture_trace trace;
+  struct pidp_gpio_v2 backend;
+  struct port_fake fake;
+  unsigned int row;
+  size_t i;
+  int index = 0;
+
+  memset(&inputs, 0, sizeof(inputs));
+  memset(&trace, 0, sizeof(trace));
+  memset(&backend, 0, sizeof(backend));
+  if (open_port(&fake, &backend, &trace, &inputs, &index) < 0)
+    return 0;
+  if (pidp_gpio_scan_rows(&backend, rows, port_delay, &fake) < 0
+      || pidp_gpio_v2_close(&backend) < 0) {
+    fprintf(stderr, "%s row scan failed\n", name);
+    (void)pidp_gpio_v2_close(&backend);
+    return 0;
+  }
+  pidp_fixture_record_final(&trace, &fake.state);
+  if (!safe_trace(name, &trace)
+      || trace.sample_count != 0
+      || trace.interval_count != PIDP_GPIO_V2_LED_ROWS * 2u
+      || fake.request_open || fake.chip_open
+      || trace.final_state.led_output != ((1u << PIDP_GPIO_V2_LED_ROWS) - 1u)
+      || trace.final_state.led_high != 0
+      || trace.final_state.col_output != 0
+      || trace.final_state.switch_output != 0) {
+    fprintf(stderr, "%s row scan did not safely idle and close\n", name);
+    return 0;
+  }
+  for (i = 0; i < trace.interval_count; ++i) {
+    const struct pidp_fixture_interval *interval = &trace.intervals[i];
+    const struct pidp_fixture_snapshot *state = &interval->state;
+    row = (unsigned int)(i / 2u);
+    if (interval->duration_ns != (i % 2u == 0 ? 50000u : 10000u)
+        || state->switch_output != 0
+        || state->col_output != FIXTURE_ALL_COLS
+        || (state->led_output & state->led_high)
+            != (i % 2u == 0 ? 1u << row : 0)
+        || ((~state->col_high) & FIXTURE_ALL_COLS) != rows[row]) {
+      fprintf(stderr, "%s displayed the wrong row or interval\n", name);
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static int input_scan_case(void)
+{
+  struct pidp_fixture_inputs inputs;
+  struct pidp_fixture_trace trace;
+  struct pidp_gpio_v2 backend;
+  struct port_fake fake;
+  struct pidp_gpio_rotary rotary = {{3, 3}};
+  uint32_t switches[PIDP_GPIO_V2_SWITCH_ROWS] = {0};
+  int knobs[2] = {1, 1};
+  int index = 0;
+  unsigned int phase;
+  size_t i;
+
+  memset(&inputs, 0, sizeof(inputs));
+  memset(&trace, 0, sizeof(trace));
+  for (phase = 0; phase < GPIOPATTERN_LED_BRIGHTNESS_PHASES; ++phase) {
+    inputs.values[0][phase] = UINT32_C(0xa55);
+    inputs.values[1][phase] = UINT32_C(0x155);
+  }
+  inputs.values[2][0] = UINT32_C(0x100);
+  inputs.values[2][1] = UINT32_C(0x300);
+  inputs.values[2][2] = UINT32_C(0x400);
+  inputs.values[2][3] = UINT32_C(0xc00);
+  if (open_port(&fake, &backend, &trace, &inputs, &index) < 0)
+    return 0;
+  for (phase = 0; phase < 4; ++phase) {
+    if (pidp_gpio_scan_inputs(&backend, switches, &rotary, knobs,
+        port_delay, &fake) < 0) {
+      fprintf(stderr, "input scan failed\n");
+      (void)pidp_gpio_v2_close(&backend);
+      return 0;
+    }
+  }
+  if (pidp_gpio_v2_close(&backend) < 0) {
+    fprintf(stderr, "input scan close failed\n");
+    return 0;
+  }
+  pidp_fixture_record_final(&trace, &fake.state);
+  if (!safe_trace("input scan", &trace)
+      || trace.sample_count != PIDP_GPIO_V2_SWITCH_ROWS * 4u
+      || trace.interval_count != PIDP_GPIO_V2_SWITCH_ROWS * 4u
+      || fake.request_open || fake.chip_open
+      || knobs[0] != 2 || knobs[1] != 2
+      || trace.final_state.led_output != ((1u << PIDP_GPIO_V2_LED_ROWS) - 1u)
+      || trace.final_state.led_high != 0
+      || trace.final_state.col_output != 0
+      || trace.final_state.switch_output != 0) {
+    fprintf(stderr, "input scan did not preserve rows, rotary, or cleanup\n");
+    return 0;
+  }
+  if (switches[0] != UINT32_C(0xa55)
+      || switches[1] != UINT32_C(0x155)
+      || switches[2] != UINT32_C(0x400)
+      || rotary.last_code[0] != 3 || rotary.last_code[1] != 3) {
+    fprintf(stderr, "input scan returned wrong switch or rotary state\n");
+    return 0;
+  }
+  for (i = 0; i < trace.interval_count; ++i) {
+    const struct pidp_fixture_interval *interval = &trace.intervals[i];
+    const struct pidp_fixture_snapshot *state = &interval->state;
+    if (interval->duration_ns != 100000u
+        || state->led_output != ((1u << PIDP_GPIO_V2_LED_ROWS) - 1u)
+        || state->led_high != 0 || state->col_output != 0
+        || state->switch_output != (1u << (i % PIDP_GPIO_V2_SWITCH_ROWS))
+        || (state->switch_high & state->switch_output) != 0) {
+      fprintf(stderr, "input scan selected unsafe switch state\n");
+      return 0;
+    }
+  }
+  return 1;
+}
+
 static int interrupt_delay(void *context, long nanoseconds)
 {
   int result = fail_delay(context, nanoseconds);
@@ -606,6 +729,76 @@ static int interrupt_delay(void *context, long nanoseconds)
   if (result < 0)
     errno = EINTR;
   return result;
+}
+
+static int row_failure_case(unsigned int fail_call, int interrupted)
+{
+  struct pidp_fixture_inputs inputs;
+  struct pidp_fixture_trace trace;
+  struct pidp_gpio_v2 backend;
+  struct port_fake fake;
+  struct failing_delay failure = {0, fail_call, &fake};
+  uint32_t rows[PIDP_GPIO_V2_LED_ROWS] = {1, 3, 0x155, 0x2aa, 0x555, 0xa55};
+  int index = 0;
+  int expected_error = fail_call == 0 ? EINVAL : interrupted ? EINTR : ETIMEDOUT;
+
+  memset(&inputs, 0, sizeof(inputs));
+  memset(&trace, 0, sizeof(trace));
+  memset(&backend, 0, sizeof(backend));
+  if (open_port(&fake, &backend, &trace, &inputs, &index) < 0)
+    return 0;
+  if (fail_call == 0)
+    rows[PIDP_GPIO_V2_LED_ROWS - 1] = PIDP_GPIO_V2_LED_MASK + 1u;
+  if (pidp_gpio_scan_rows(&backend, rows,
+      interrupted ? interrupt_delay : fail_delay, &failure) >= 0
+      || errno != expected_error) {
+    fprintf(stderr, "row scan did not return its failure\n");
+    (void)pidp_gpio_v2_close(&backend);
+    return 0;
+  }
+  if (fake.request_open || fake.chip_open || trace.sample_count != 0
+      || trace.interval_count != (fail_call == 0 ? 0 : fail_call - 1u)
+      || fake.state.led_high != 0 || fake.state.col_output != 0
+      || fake.state.switch_output != 0 || !safe_trace("row failure", &trace)) {
+    fprintf(stderr, "row failure did not blank, idle and release\n");
+    return 0;
+  }
+  return 1;
+}
+
+static int input_failure_case(unsigned int fail_call, int interrupted)
+{
+  struct pidp_fixture_inputs inputs;
+  struct pidp_fixture_trace trace;
+  struct pidp_gpio_v2 backend;
+  struct port_fake fake;
+  struct pidp_gpio_rotary rotary = {{3, 3}};
+  struct failing_delay failure = {0, fail_call, &fake};
+  uint32_t switches[PIDP_GPIO_V2_SWITCH_ROWS] = {0};
+  int knobs[2] = {1, 1};
+  int index = 0;
+  int expected_error = interrupted ? EINTR : ETIMEDOUT;
+
+  memset(&inputs, 0, sizeof(inputs));
+  memset(&trace, 0, sizeof(trace));
+  memset(&backend, 0, sizeof(backend));
+  if (open_port(&fake, &backend, &trace, &inputs, &index) < 0)
+    return 0;
+  if (pidp_gpio_scan_inputs(&backend, switches, &rotary, knobs,
+      interrupted ? interrupt_delay : fail_delay, &failure) >= 0
+      || errno != expected_error) {
+    fprintf(stderr, "input scan did not return its failure\n");
+    (void)pidp_gpio_v2_close(&backend);
+    return 0;
+  }
+  if (fake.request_open || fake.chip_open
+      || trace.interval_count != fail_call - 1u
+      || fake.state.led_high != 0 || fake.state.col_output != 0
+      || fake.state.switch_output != 0 || !safe_trace("input failure", &trace)) {
+    fprintf(stderr, "input failure did not idle and release\n");
+    return 0;
+  }
+  return 1;
 }
 
 static int single_failure_case(unsigned int fail_call, int interrupted)
@@ -688,6 +881,9 @@ static int timing_failure_case(unsigned int fail_call)
 int main(void)
 {
   unsigned int mode;
+  const uint32_t row_patterns[PIDP_GPIO_V2_LED_ROWS] =
+      {0, FIXTURE_ALL_COLS, UINT32_C(0xa55), UINT32_C(0x155),
+       UINT32_C(0x2aa), UINT32_C(0x555)};
 
   for (mode = 0; mode < 3; ++mode) {
     if (!run_pattern_case(mode, 1, 1))
@@ -697,11 +893,17 @@ int main(void)
     return 1;
   if (!single_pattern_case("single-dark", 0)
       || !single_pattern_case("single-dense", FIXTURE_ALL_COLS)
-      || !single_pattern_case("single-mixed", UINT32_C(0xa55)))
+      || !single_pattern_case("single-mixed", UINT32_C(0xa55))
+      || !row_pattern_case("rows-mixed", row_patterns)
+      || !input_scan_case())
     return 1;
   if (!single_failure_case(0, 0) || !single_failure_case(1, 0)
       || !single_failure_case(2, 0) || !single_failure_case(144, 0)
-      || !single_failure_case(1, 1) || !single_failure_case(2, 1))
+      || !single_failure_case(1, 1) || !single_failure_case(2, 1)
+      || !row_failure_case(0, 0) || !row_failure_case(1, 0)
+      || !row_failure_case(2, 0) || !row_failure_case(12, 0)
+      || !row_failure_case(1, 1) || !row_failure_case(2, 1)
+      || !input_failure_case(1, 0) || !input_failure_case(2, 1))
     return 1;
   if (!timing_failure_case(1) || !timing_failure_case(2)
       || !timing_failure_case(13))

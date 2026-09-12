@@ -61,7 +61,8 @@
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
-#include <inttypes.h> 
+#include <inttypes.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "blinkenlight_panels.h"
@@ -93,6 +94,8 @@ int panel_lock = 0; // Default to panel unlocked
 int pwrDebounce=0;
 
 static int opt_demo = 0;
+static int opt_demo_rows = 0;
+static int opt_demo_inputs_physical = 0;
 
 #ifdef PIDP_GPIO_V2
 #define PIDP_GPIO_DEMO_SR UINT64_C(0200)
@@ -105,6 +108,13 @@ static uint64_t demo_frame_count;
 static uint64_t demo_changing_frame_count;
 static uint32_t demo_previous_rows[8];
 static int demo_previous_rows_valid;
+static uint32_t demo_previous_switches[PIDP_GPIO_V2_SWITCH_ROWS];
+static int demo_previous_knobs[2];
+static int demo_previous_inputs_valid;
+static uint32_t demo_sr_stable;
+static uint32_t demo_sr_candidate;
+static struct timespec demo_sr_candidate_since;
+static int demo_sr_valid;
 
 static void demo_signal_handler(int signal_number)
 {
@@ -147,6 +157,83 @@ int knobAddrMap[8] = // Map rotary positioner to ADDR SELECT pseudo switches
 int knobDataMap[4] = // Map rotary positioner to DATA SELECT pseudo switches
 { 3, 2, 0, 1 };
 
+#ifdef PIDP_GPIO_V2
+static uint32_t demo_sr_from_inputs(void)
+{
+    uint32_t low = gpio_switchstatus[0] & UINT32_C(0xfff);
+    uint32_t high = gpio_switchstatus[1] & UINT32_C(0x3ff);
+
+    return ((~low) & UINT32_C(0xfff))
+        | (((~high) & UINT32_C(0x3ff)) << 12);
+}
+
+static void demo_update_sr_debounce(void)
+{
+    struct timespec now;
+    uint32_t value = demo_sr_from_inputs();
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) < 0) {
+        demo_sr_stable = value;
+        demo_sr_candidate = value;
+        demo_sr_valid = 1;
+        return;
+    }
+    if (!demo_sr_valid) {
+        demo_sr_stable = value;
+        demo_sr_candidate = value;
+        demo_sr_candidate_since = now;
+        demo_sr_valid = 1;
+    } else if (demo_sr_candidate != value) {
+        demo_sr_candidate = value;
+        demo_sr_candidate_since = now;
+    } else if (demo_sr_stable != demo_sr_candidate
+        && ((int64_t)(now.tv_sec - demo_sr_candidate_since.tv_sec)
+            * INT64_C(1000000000)
+            + now.tv_nsec - demo_sr_candidate_since.tv_nsec)
+            >= INT64_C(20000000)) {
+        demo_sr_stable = demo_sr_candidate;
+    }
+}
+
+static int demo_service_inputs(void)
+{
+    unsigned int i;
+    uint32_t previous_sr = demo_sr_stable;
+    int changed = !demo_previous_inputs_valid;
+
+    if (!opt_demo_inputs_physical)
+        return 0;
+    if (pidp_gpio_linux_demo_read_inputs() < 0)
+        return -1;
+    demo_update_sr_debounce();
+    if (demo_sr_stable != previous_sr)
+        changed = 1;
+    for (i = 0; i < PIDP_GPIO_V2_SWITCH_ROWS; ++i) {
+        if (demo_previous_inputs_valid
+            && demo_previous_switches[i] != gpio_switchstatus[i])
+            changed = 1;
+        demo_previous_switches[i] = gpio_switchstatus[i];
+    }
+    for (i = 0; i < 2; ++i) {
+        if (demo_previous_inputs_valid && demo_previous_knobs[i] != knobValue[i])
+            changed = 1;
+        demo_previous_knobs[i] = knobValue[i];
+    }
+    if (changed) {
+        printf("IDLED_DEMO_INPUT sr=%06" PRIx32
+            " raw0=%03" PRIx32 " raw1=%03" PRIx32
+            " row2=%03" PRIx32 " addr=%d data=%d\n",
+            demo_sr_stable, demo_previous_switches[0] & UINT32_C(0xfff),
+            demo_previous_switches[1] & UINT32_C(0x3ff),
+            demo_previous_switches[2] & UINT32_C(0xfff),
+            knobValue[0], knobValue[1]);
+        fflush(stdout);
+    }
+    demo_previous_inputs_valid = 1;
+    return 0;
+}
+#endif
+
 /*
  *	PiDP11 controls which are accessible over Blinkenlight API
  */
@@ -177,7 +264,8 @@ static void on_blinkenlight_api_panel_get_controlvalues(blinkenlight_panel_t *p)
     unsigned i;
 #ifdef PIDP_GPIO_V2
     if (opt_demo) {
-        switch_SR->value = PIDP_GPIO_DEMO_SR;
+        switch_SR->value = opt_demo_inputs_physical
+            ? demo_sr_stable : PIDP_GPIO_DEMO_SR;
         switch_LOADADRS->value = 0;
         switch_EXAM->value = 0;
         switch_DEPOSIT->value = 0;
@@ -411,7 +499,10 @@ static int demo_service_frame(void)
     if (gpiopattern_blinkenlight_panel == NULL)
         return 0;
     gpiopattern_demo_snapshot(gpiopattern_blinkenlight_panel, rows);
-    if (pidp_gpio_linux_demo_frame(rows) < 0)
+    if ((opt_demo_rows ? pidp_gpio_linux_demo_row_frame(rows)
+                       : pidp_gpio_linux_demo_frame(rows)) < 0)
+        return -1;
+    if (demo_service_inputs() < 0)
         return -1;
     ++demo_frame_count;
     if (!demo_previous_rows_valid
@@ -471,10 +562,15 @@ void blinkenlight_api_server(void)
 
 #ifdef PIDP_GPIO_V2
     if (opt_demo) {
-        printf("IDLED_DEMO_READY switch_free=1 sr=%06llo halt=0"
-            " lamptest=0 power=1 addr_select=%d data_select=%d\n",
-            (unsigned long long)PIDP_GPIO_DEMO_SR,
-            knobAddrMap[knobValue[0]], knobDataMap[knobValue[1]]);
+        printf("IDLED_DEMO_READY switch_free=%d sr=%06llo halt=0"
+            " lamptest=0 power=1 addr_select=%d data_select=%d"
+            " scan_mode=%s input_mode=%s\n",
+            opt_demo_inputs_physical ? 0 : 1,
+            (unsigned long long)(opt_demo_inputs_physical
+                ? demo_sr_stable : PIDP_GPIO_DEMO_SR),
+            knobAddrMap[knobValue[0]], knobDataMap[knobValue[1]],
+            opt_demo_rows ? "rows" : "single",
+            opt_demo_inputs_physical ? "physical" : "fixed");
         fflush(stdout);
     }
 #endif
@@ -493,7 +589,7 @@ void blinkenlight_api_server(void)
 #endif
             readfds = svc_fdset;
             tv.tv_sec = 0;
-            tv.tv_usec = 1000 * 2; // every 10 ms*time_slice_ms;
+            tv.tv_usec = opt_demo ? 0 : 1000 * 2;
             switch (select(dtbsz, &readfds, NULL, NULL, &tv)) {
             case -1:
                 if (errno == EINTR)
@@ -562,7 +658,7 @@ static void help(void)
     fprintf(stderr, "  (compiled " __DATE__ " " __TIME__ ")\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Usage:\n");
-    fprintf(stderr, "  pidp11_blinkenlightd [-h] [-b] [-v] [-t] [-L] [-D] [-a 0..7] [-d 0..3] [-s <n>]\n");
+    fprintf(stderr, "  pidp11_blinkenlightd [-h] [-b] [-v] [-t] [-L] [-D] [-R] [-S] [-a 0..7] [-d 0..3] [-s <n>]\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "  -h          display this help and exit\n");
 //  fprintf(stderr, "  - <port>    TCP port for RCP access.\n");
@@ -570,7 +666,9 @@ static void help(void)
     fprintf(stderr, "                default output is stderr\n");
     fprintf(stderr, "  -v          verbose: tell what I'm doing\n");
     fprintf(stderr, "  -t          test mode\n");
-    fprintf(stderr, "  -D          switch-free low-load demo mode (gpio-v2 only)\n");
+    fprintf(stderr, "  -D          switch-free demo mode (gpio-v2 only)\n");
+    fprintf(stderr, "  -R          opt into row-at-a-time demo scanning (requires -D)\n");
+    fprintf(stderr, "  -S          opt into physical SR and rotary inputs (requires -D)\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "  -L          permanently engage PANEL LOCK\n");
     fprintf(stderr, "  -a 0..7     starting position of the ADDR SELECT knob\n");
@@ -602,7 +700,7 @@ static int parse_commandline(int argc, char **argv)
     }
 
     opterr = 0;
-    while ((c = getopt(argc, argv, "hbvtLDa:d:s:")) != -1)
+    while ((c = getopt(argc, argv, "hbvtLDRSa:d:s:")) != -1)
         switch (c) {
         case 'h':
             help();
@@ -618,6 +716,12 @@ static int parse_commandline(int argc, char **argv)
             break;
         case 'D':
             opt_demo = 1;
+            break;
+        case 'R':
+            opt_demo_rows = 1;
+            break;
+        case 'S':
+            opt_demo_inputs_physical = 1;
             break;
         case 'L':
             panel_lock = 1;
@@ -641,11 +745,19 @@ static int parse_commandline(int argc, char **argv)
             else
                 fprintf(stderr, "Unknown option character `\\x%x'.\n", optopt);
             return 0;
-            break;
         default:
             abort(); // getopt() got crazy?
             break;
         }
+
+    if (opt_demo_rows && !opt_demo) {
+        fprintf(stderr, "Row-at-a-time demo scanning (-R) requires -D.\n");
+        return 0;
+    }
+    if (opt_demo_inputs_physical && !opt_demo) {
+        fprintf(stderr, "Physical demo inputs (-S) require -D.\n");
+        return 0;
+    }
 
     // start logging
     print_open(opt_background); // if background, then syslog
@@ -869,6 +981,8 @@ int main(int argc, char *argv[])
             fprintf(stderr, "could not register demo GPIO cleanup\n");
             return 1;
         }
+        if (demo_service_inputs() < 0)
+            return 1;
     } else {
         if (gpio_mux_thread_start() < 0)
             return 1;
