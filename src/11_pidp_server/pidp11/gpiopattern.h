@@ -55,5 +55,7 @@ extern volatile uint32_t gpiopattern_ledstatus_phases[2][GPIOPATTERN_LED_BRIGHTN
 
 // void *gpiopattern_update_leds(int *terminate) ;
 
+void gpiopattern_demo_snapshot(blinkenlight_panel_t *panel, uint32_t rows[8]);
+
 
 #endif

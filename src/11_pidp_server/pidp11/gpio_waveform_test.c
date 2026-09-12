@@ -526,6 +526,123 @@ static int run_pattern_case(unsigned int mode, int first_knob, int second_knob)
       original_switches, port_switches, original_knobs, port_knobs, expected_knobs);
 }
 
+static int single_pattern_case(const char *name, uint32_t value)
+{
+  struct pidp_fixture_inputs inputs;
+  struct pidp_fixture_trace trace;
+  struct pidp_gpio_v2 backend;
+  struct port_fake fake;
+  uint32_t rows[PIDP_GPIO_V2_LED_ROWS];
+  int index = 0;
+  unsigned int row;
+  size_t i;
+
+  memset(&inputs, 0, sizeof(inputs));
+  memset(&trace, 0, sizeof(trace));
+  memset(&backend, 0, sizeof(backend));
+  for (row = 0; row < PIDP_GPIO_V2_LED_ROWS; ++row)
+    rows[row] = value;
+  if (open_port(&fake, &backend, &trace, &inputs, &index) < 0)
+    return 0;
+  if (pidp_gpio_scan_single(&backend, rows, port_delay, &fake) < 0
+      || pidp_gpio_v2_close(&backend) < 0) {
+    fprintf(stderr, "%s single-cell scan failed\n", name);
+    (void)pidp_gpio_v2_close(&backend);
+    return 0;
+  }
+  pidp_fixture_record_final(&trace, &fake.state);
+  if (!safe_trace(name, &trace)
+      || trace.sample_count != 0
+      || trace.interval_count != PIDP_GPIO_V2_LED_ROWS * PIDP_GPIO_V2_COLS * 2u
+      || fake.request_open || fake.chip_open) {
+    fprintf(stderr, "%s selected or sampled a switch row\n", name);
+    return 0;
+  }
+  for (i = 0; i < trace.interval_count; ++i) {
+    const struct pidp_fixture_interval *interval = &trace.intervals[i];
+    const struct pidp_fixture_snapshot *state = &interval->state;
+    unsigned int cell = (unsigned int)(i / 2u);
+    unsigned int expected_row = cell / PIDP_GPIO_V2_COLS;
+    unsigned int expected_column = cell % PIDP_GPIO_V2_COLS;
+
+    if (interval->duration_ns != (i % 2u == 0 ? 50000u : 10000u)
+        || state->switch_output != 0
+        || state->col_output != FIXTURE_ALL_COLS
+        || (state->led_output & state->led_high)
+            != (i % 2u == 0 ? 1u << expected_row : 0)
+        || ((~state->col_high) & FIXTURE_ALL_COLS)
+            != (rows[expected_row] & (1u << expected_column))) {
+      fprintf(stderr, "%s displayed the wrong cell or interval\n", name);
+      return 0;
+    }
+  }
+  for (i = 0; i < trace.state_count; ++i) {
+    const struct pidp_fixture_snapshot *state = &trace.states[i];
+    unsigned int enabled = state->led_output & state->led_high;
+    unsigned int active_columns =
+        (~state->col_high) & FIXTURE_ALL_COLS;
+
+    if (state->switch_output != 0) {
+      fprintf(stderr, "%s drove a switch row\n", name);
+      return 0;
+    }
+
+    if (enabled != 0 && bit_count(enabled) > 1u) {
+      fprintf(stderr, "%s enabled more than one row\n", name);
+      return 0;
+    }
+    if (enabled != 0 && bit_count(active_columns) > 1u) {
+      fprintf(stderr, "%s enabled more than one LED\n", name);
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static int interrupt_delay(void *context, long nanoseconds)
+{
+  int result = fail_delay(context, nanoseconds);
+
+  if (result < 0)
+    errno = EINTR;
+  return result;
+}
+
+static int single_failure_case(unsigned int fail_call, int interrupted)
+{
+  struct pidp_fixture_inputs inputs;
+  struct pidp_fixture_trace trace;
+  struct pidp_gpio_v2 backend;
+  struct port_fake fake;
+  struct failing_delay failure = {0, fail_call, &fake};
+  uint32_t rows[PIDP_GPIO_V2_LED_ROWS] = {1, 2, 4, 8, 16, 32};
+  int index = 0;
+  int expected_error = fail_call == 0 ? EINVAL : interrupted ? EINTR : ETIMEDOUT;
+
+  memset(&inputs, 0, sizeof(inputs));
+  memset(&trace, 0, sizeof(trace));
+  memset(&backend, 0, sizeof(backend));
+  if (open_port(&fake, &backend, &trace, &inputs, &index) < 0)
+    return 0;
+  if (fail_call == 0)
+    rows[PIDP_GPIO_V2_LED_ROWS - 1] = PIDP_GPIO_V2_LED_MASK + 1u;
+  if (pidp_gpio_scan_single(&backend, rows,
+      interrupted ? interrupt_delay : fail_delay, &failure) >= 0
+      || errno != expected_error) {
+    fprintf(stderr, "single-cell scan did not return its failure\n");
+    (void)pidp_gpio_v2_close(&backend);
+    return 0;
+  }
+  if (fake.request_open || fake.chip_open || trace.sample_count != 0
+      || trace.interval_count != (fail_call == 0 ? 0 : fail_call - 1u)
+      || fake.state.led_high != 0 || fake.state.col_output != 0
+      || fake.state.switch_output != 0 || !safe_trace("single failure", &trace)) {
+    fprintf(stderr, "single-cell failure did not blank, idle and release\n");
+    return 0;
+  }
+  return 1;
+}
+
 static int timing_failure_case(unsigned int fail_call)
 {
   struct pidp_fixture_inputs inputs;
@@ -577,6 +694,14 @@ int main(void)
       return 1;
   }
   if (!run_pattern_case(2, 7, 0))
+    return 1;
+  if (!single_pattern_case("single-dark", 0)
+      || !single_pattern_case("single-dense", FIXTURE_ALL_COLS)
+      || !single_pattern_case("single-mixed", UINT32_C(0xa55)))
+    return 1;
+  if (!single_failure_case(0, 0) || !single_failure_case(1, 0)
+      || !single_failure_case(2, 0) || !single_failure_case(144, 0)
+      || !single_failure_case(1, 1) || !single_failure_case(2, 1))
     return 1;
   if (!timing_failure_case(1) || !timing_failure_case(2)
       || !timing_failure_case(13))

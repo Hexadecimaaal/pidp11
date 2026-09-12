@@ -132,3 +132,53 @@ int pidp_gpio_scan_cycle(struct pidp_gpio_v2 *backend,
 
   return 0;
 }
+
+static int interruptible_delay(void *context, long nanoseconds)
+{
+  const struct timespec requested = {
+    .tv_sec = nanoseconds / 1000000000L,
+    .tv_nsec = nanoseconds % 1000000000L
+  };
+
+  (void)context;
+  return nanosleep(&requested, NULL);
+}
+
+int pidp_gpio_scan_single(struct pidp_gpio_v2 *backend,
+    const uint32_t rows[PIDP_GPIO_V2_LED_ROWS],
+    pidp_gpio_delay delay, void *context)
+{
+  unsigned int row;
+  unsigned int column;
+
+  if (backend == NULL || rows == NULL)
+    return scan_failure(backend, EINVAL);
+  if (delay == NULL)
+    delay = interruptible_delay;
+  for (row = 0; row < PIDP_GPIO_V2_LED_ROWS; ++row) {
+    if (rows[row] & ~PIDP_GPIO_V2_LED_MASK)
+      return scan_failure(backend, EINVAL);
+  }
+  for (row = 0; row < PIDP_GPIO_V2_LED_ROWS; ++row) {
+    for (column = 0; column < PIDP_GPIO_V2_COLS; ++column) {
+      uint32_t bit = rows[row] & (UINT32_C(1) << column);
+      int result;
+      int error;
+
+      if (pidp_gpio_v2_display(backend, row, bit) < 0)
+        return scan_failure(backend, errno);
+      result = delay_for(context, delay, 50000L);
+      error = errno;
+      /* blank before handling interruption, logging, or any further delay. */
+      if (pidp_gpio_v2_blank(backend) < 0)
+        return scan_failure(backend, errno);
+      if (result < 0)
+        return scan_failure(backend, error);
+      if (delay_for(context, delay, 10000L) < 0)
+        return scan_failure(backend, errno);
+    }
+  }
+  if (pidp_gpio_v2_idle(backend) < 0)
+    return scan_failure(backend, errno);
+  return 0;
+}

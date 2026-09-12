@@ -124,6 +124,16 @@ stdenv.mkDerivation {
     expect_mapping_error "pidp gpio-v2 mapping is malformed" \
       env PIDP_GPIO_CHIP=/dev/unused-pidp-test-chip PIDP_GPIO_OFFSETS=0,0 \
       "$out/bin/pidp1170_blinkenlightd"
+    expect_mapping_error "pidp gpio-v2 demo mapping is missing" \
+      env -u PIDP_GPIO_CHIP -u PIDP_GPIO_OFFSETS \
+      "$out/bin/pidp1170_blinkenlightd" -D
+    expect_mapping_error "pidp gpio-v2 demo mapping is malformed" \
+      env PIDP_GPIO_CHIP=/dev/unused-pidp-test-chip PIDP_GPIO_OFFSETS=0,0 \
+      "$out/bin/pidp1170_blinkenlightd" -D
+    expect_mapping_error "pidp gpio-v2 demo chip preflight" \
+      env PIDP_GPIO_CHIP=/dev/unused-pidp-test-chip \
+      PIDP_GPIO_OFFSETS=61,44,47,54,51,50,60,43,55,37,39,56,49,53,52,48,46,59,36,42,38 \
+      "$out/bin/pidp1170_blinkenlightd" -D
     echo "pidp gpio-v2 startup checks passed"
     runHook postInstallCheck
   '';

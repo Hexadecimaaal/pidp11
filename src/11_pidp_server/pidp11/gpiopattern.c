@@ -261,11 +261,10 @@ void break_here()
  * control value maybe a pattern for a brightness phase of the value
  */
 static void value2gpio_ledstatus_value(blinkenlight_panel_t *p, blinkenlight_control_t *c,
-		uint32_t value, volatile uint32_t *gpio_ledstatus)
+    uint32_t value, volatile uint32_t *gpio_ledstatus, int local_lamptest)
 {
     unsigned i_register_wiring;
     extern blinkenlight_control_t * leds_MMR0_MODE ;
-    extern blinkenlight_control_t * switch_LAMPTEST ;
 
 
 //-----------------------------------------------------------------------
@@ -278,7 +277,7 @@ static void value2gpio_ledstatus_value(blinkenlight_panel_t *p, blinkenlight_con
     int panel_mode = p->mode ;
 
     // local LAMPTEST overrides mode set over API
-    if (!switch_LAMPTEST->value)				// prototype has lamptest inverted
+    if (local_lamptest)
         panel_mode = RPC_PARAM_VALUE_PANEL_MODE_LAMPTEST ;
 
 
@@ -474,6 +473,23 @@ mask = 0 ;
     }
 }
 
+/* snapshots reuse the real panel wiring, without the prototype's inverted
+ * physical lamp-test input or the normal incandescent brightness averaging.
+ */
+void gpiopattern_demo_snapshot(blinkenlight_panel_t *panel, uint32_t rows[8])
+{
+  unsigned int i;
+
+  for (i = 0; i < 8; ++i)
+    rows[i] = 0;
+  for (i = 0; i < panel->controls_count; ++i) {
+    blinkenlight_control_t *control = &panel->controls[i];
+
+    if (!control->is_input)
+      value2gpio_ledstatus_value(panel, control, control->value, rows, 0);
+  }
+}
+
 /*
  * - averages the Blinkenlight API outputs,
  * - generates the LED brightness patterns
@@ -487,6 +503,7 @@ mask = 0 ;
  */
 void *gpiopattern_update_leds(int *terminate)
 {
+  extern blinkenlight_control_t *switch_LAMPTEST;
 
 	while (*terminate == 0) {
 		blinkenlight_panel_t *p = gpiopattern_blinkenlight_panel; // short alias
@@ -544,7 +561,7 @@ void *gpiopattern_update_leds(int *terminate)
 						value |= 1 << bitidx;
 
 				}
-				value2gpio_ledstatus_value(p, c, value, gpio_ledstatus); // fill in to gpio
+        value2gpio_ledstatus_value(p, c, value, gpio_ledstatus, !switch_LAMPTEST->value);
 			}
 		}
 

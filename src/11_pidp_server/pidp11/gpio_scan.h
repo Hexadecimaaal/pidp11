@@ -25,4 +25,11 @@ int pidp_gpio_scan_cycle(struct pidp_gpio_v2 *backend,
     struct pidp_gpio_rotary *rotary, int knobs[2],
     pidp_gpio_delay delay, void *context);
 
+/* one unaveraged frame, one lit cell at most, with no switch selection.
+ * an interrupted/error delay closes the request before returning its errno.
+ */
+int pidp_gpio_scan_single(struct pidp_gpio_v2 *backend,
+    const uint32_t rows[PIDP_GPIO_V2_LED_ROWS],
+    pidp_gpio_delay delay, void *context);
+
 #endif
