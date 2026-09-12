@@ -38,11 +38,13 @@ target.stdenv.mkDerivation {
     install -Dm755 ${script} "$out/bin/pidp-idled-demo"
     install -Dm644 ${./systems/idled/boot.ini} \
       "$out/share/pidp-visionfive2/idled/boot.ini"
+    install -Dm644 ${./systems/panel/boot.ini} \
+      "$out/share/pidp-visionfive2/panel/boot.ini"
     runHook postInstall
   '';
 
   meta = {
-    description = "switch-free low-load PiDP-11 IDLED demonstration";
+    description = "isolated PiDP-11 IDLED and front-panel learning runtime";
     mainProgram = "pidp-idled-demo";
     platforms = [ "riscv64-linux" ];
   };

@@ -47,6 +47,7 @@ stdenv.mkDerivation {
       (server + "/makefile")
       (server + "/main.c")
       (server + "/main.h")
+      (server + "/panel_actions.h")
       (server + "/gpio.h")
       (server + "/gpio_linux.c")
       (server + "/gpio_linux.h")
@@ -137,6 +138,19 @@ stdenv.mkDerivation {
     expect_mapping_error "pidp gpio-v2 demo mapping is missing" \
       env -u PIDP_GPIO_CHIP -u PIDP_GPIO_OFFSETS \
       "$out/bin/pidp1170_blinkenlightd" -D -R -S
+    expect_mapping_error "pidp gpio-v2 demo mapping is missing" \
+      env -u PIDP_GPIO_CHIP -u PIDP_GPIO_OFFSETS \
+      "$out/bin/pidp1170_blinkenlightd" -D -R -S -F
+    for options in "-F" "-D -F" "-S -F"; do
+      status=0
+      timeout 5 "$out/bin/pidp1170_blinkenlightd" $options > option.log 2>&1 || status=$?
+      test "$status" -eq 1
+      diagnostic=$(<option.log)
+      case "$diagnostic" in
+        "Front-panel demo inputs (-F) require -D and -S."*) ;;
+        *) cat option.log; exit 1 ;;
+      esac
+    done
     for option in -R -S; do
       status=0
       timeout 5 "$out/bin/pidp1170_blinkenlightd" "$option" > option.log 2>&1 || status=$?

@@ -25,7 +25,13 @@ export PATH="$coreutils:@bash@/bin"
 
 gpio_chip="${PIDP_GPIO_CHIP:-/dev/gpiochip0}"
 gpio_offsets=61,44,47,54,51,50,60,43,55,37,39,56,49,53,52,48,46,59,36,42,38
-scan_mode="${PIDP_IDLED_SCAN-single}"
+program_mode="${PIDP_IDLED_PROGRAM-idled}"
+case "$program_mode" in
+  idled) default_scan=single; default_input=fixed ;;
+  panel) default_scan=rows; default_input=physical ;;
+  *) printf '%s\n' 'PIDP_IDLED_PROGRAM must be idled or panel' >&2; exit 2 ;;
+esac
+scan_mode="${PIDP_IDLED_SCAN-$default_scan}"
 case "$scan_mode" in
   single) server_args=(-D) ;;
   rows) server_args=(-D -R) ;;
@@ -34,7 +40,7 @@ case "$scan_mode" in
     exit 2
     ;;
 esac
-input_mode="${PIDP_IDLED_INPUT-fixed}"
+input_mode="${PIDP_IDLED_INPUT-$default_input}"
 case "$input_mode" in
   fixed) ;;
   physical) server_args+=(-S) ;;
@@ -43,6 +49,16 @@ case "$input_mode" in
     exit 2
     ;;
 esac
+if [ "$program_mode" = panel ]; then
+  if [ "$input_mode" != physical ]; then
+    printf '%s\n' 'panel learning mode requires physical inputs' >&2
+    exit 2
+  fi
+  server_args+=(-F)
+  export PIDP_REALCONS_PANEL_ONLY=1
+else
+  unset PIDP_REALCONS_PANEL_ONLY
+fi
 
 if [ "${1:-}" = '--inside' ]; then
   parent_mount=$("$readlink" "/proc/$PPID/ns/mnt")
@@ -127,7 +143,7 @@ fi
 "$mount" -t tmpfs -o mode=0755,size=16M tmpfs "$mountpoint"
 
 script_dir=$("$coreutils/dirname" "$0")
-boot="$script_dir/../share/pidp-visionfive2/idled/boot.ini"
+boot="$script_dir/../share/pidp-visionfive2/$program_mode/boot.ini"
 runtime_dir=$("$coreutils/mktemp" -d /tmp/pidp-idled-demo.XXXXXX)
 rpc_log="$runtime_dir/rpcbind.log"
 server_log="$runtime_dir/server.log"
@@ -272,14 +288,22 @@ while :; do
   "$coreutils/sleep" 0.1
 done
 
-"$sed" \
-  -e 's/\r$//' \
-  -e '/^!column -c 75 \.\.\/selections$/d' \
-  -e '/^echo PiDP-11\/70 boot menu/d' \
-  -e '/^echo Now running IDLED/d' \
-  -e '/^echo [-][ -]*$/d' \
-  "$boot" > "$run_boot"
-"$simulator" "$run_boot" > "$simulator_log" 2>&1 &
+if [ "$program_mode" = panel ]; then
+  "$coreutils/cat" "$boot" > "$run_boot"
+  printf '%s\n' 'set realcons panel=11/70' 'set realcons interval=8' \
+    'set realcons connected' >> "$run_boot"
+  simulator_args=(-e "$run_boot")
+else
+  "$sed" \
+    -e 's/\r$//' \
+    -e '/^!column -c 75 \.\.\/selections$/d' \
+    -e '/^echo PiDP-11\/70 boot menu/d' \
+    -e '/^echo Now running IDLED/d' \
+    -e '/^echo [-][ -]*$/d' \
+    "$boot" > "$run_boot"
+  simulator_args=("$run_boot")
+fi
+"$simulator" "${simulator_args[@]}" < /dev/null > "$simulator_log" 2>&1 &
 simulator_pid=$!
 printf 'IDLED_DEMO_PROCESSES namespace=%d rpcbind=%s server=%s simulator=%s\n' \
   "$$" "$rpc_pid" "$server_pid" "$simulator_pid" \
@@ -287,23 +311,36 @@ printf 'IDLED_DEMO_PROCESSES namespace=%d rpcbind=%s server=%s simulator=%s\n' \
 
 n=0
 while :; do
-  changing=$("$sed" -n \
-    's/.*IDLED_DEMO_FRAME.*changing_frames=\([0-9][0-9]*\).*/\1/p' \
-    "$server_log" | "$tail" -n 1)
-  if [ -n "$changing" ] && [ "$changing" -gt 1 ]; then
-    break
+  if [ "$program_mode" = panel ]; then
+    content=$("$coreutils/cat" "$simulator_log")
+    frames=$("$sed" -n 's/.*IDLED_DEMO_FRAME frame=\([0-9][0-9]*\).*/\1/p' \
+      "$server_log" | "$tail" -n 1)
+    case "$content" in
+      *PANEL_CONSOLE_READY*)
+        if [ -n "$frames" ] && [ "$frames" -gt 1 ]; then
+          break
+        fi
+        ;;
+    esac
+  else
+    changing=$("$sed" -n \
+      's/.*IDLED_DEMO_FRAME.*changing_frames=\([0-9][0-9]*\).*/\1/p' \
+      "$server_log" | "$tail" -n 1)
+    if [ -n "$changing" ] && [ "$changing" -gt 1 ]; then
+      break
+    fi
   fi
   if ! kill -0 "$rpc_pid" 2>/dev/null; then
-    fail 'rpcbind exited before changing panel frames'
+    fail 'rpcbind exited before simulator readiness'
   fi
   if ! kill -0 "$server_pid" 2>/dev/null; then
-    fail 'pidp gpio server exited before changing panel frames'
+    fail 'pidp gpio server exited before simulator readiness'
   fi
   if ! kill -0 "$simulator_pid" 2>/dev/null; then
-    fail 'simulator exited before changing panel frames'
+    fail 'simulator exited before readiness'
   fi
   n=$((n + 1))
-  [ "$n" -lt 300 ] || fail 'changing panel frame readiness timeout'
+  [ "$n" -lt 300 ] || fail 'simulator readiness timeout'
   "$coreutils/sleep" 0.1
 done
 if ! kill -0 "$rpc_pid" 2>/dev/null \
@@ -311,8 +348,13 @@ if ! kill -0 "$rpc_pid" 2>/dev/null \
     || ! kill -0 "$simulator_pid" 2>/dev/null; then
   fail 'one demo process exited before readiness'
 fi
-printf 'IDLED_DEMO_READY panel_frames=changing changing_frames=%s ' "$changing" \
-  | "$coreutils/tee" -a "$status_log"
+if [ "$program_mode" = panel ]; then
+  printf 'PANEL_LEARNING_READY cpu=halted memory=zeroed frame=%s ' "$frames" \
+    | "$coreutils/tee" -a "$status_log"
+else
+  printf 'IDLED_DEMO_READY panel_frames=changing changing_frames=%s ' "$changing" \
+    | "$coreutils/tee" -a "$status_log"
+fi
 printf 'rpc_scope=private-network-namespace scan_mode=%s input_mode=%s runtime=%s\n' \
   "$scan_mode" "$input_mode" "$runtime_dir" \
   | "$coreutils/tee" -a "$status_log"

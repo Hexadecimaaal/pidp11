@@ -40,6 +40,9 @@ stdenv.mkDerivation {
       ./tests/headless.ini
       ./tests/console.ini
       ./tests/ether_bounds.c
+      ./tests/panel-memory.ini
+      ./tests/panel-prompt.ini
+      ./systems/panel/boot.ini
     ];
   };
 
@@ -96,6 +99,28 @@ stdenv.mkDerivation {
     case "$(cat console.log)" in
       *CONSOLE_SMOKE_PASSED*) ;;
       *) cat console.log; echo "Console smoke check did not complete" >&2; exit 1 ;;
+    esac
+    "$out/bin/pdp11_realcons" tests/panel-memory.ini > panel-memory.log 2>&1 || {
+      cat panel-memory.log
+      exit 1
+    }
+    panel_memory_output=$(<panel-memory.log)
+    case "$panel_memory_output" in
+      *$'0:\t000000'*$'200:\t000000'*$'17757776:\t000000'*PANEL_MEMORY_SMOKE_PASSED*) ;;
+      *) cat panel-memory.log; echo "Panel memory smoke check failed" >&2; exit 1 ;;
+    esac
+    PIDP_REALCONS_PANEL_ONLY=1 "$out/bin/pdp11_realcons" tests/panel-prompt.ini \
+      > panel-prompt.log 2>&1 || {
+        cat panel-prompt.log
+        exit 1
+      }
+    panel_prompt_output=$(<panel-prompt.log)
+    case "$panel_prompt_output" in
+      *"panel-only console requires a connected panel"*) ;;
+      *) cat panel-prompt.log; exit 1 ;;
+    esac
+    case "$panel_prompt_output" in
+      *PANEL_CONSOLE_READY*) cat panel-prompt.log; exit 1 ;;
     esac
     $CC -std=c99 -D_GNU_SOURCE -ffunction-sections -fdata-sections \
       ${lib.optionalString enableSanitizers "-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"} \

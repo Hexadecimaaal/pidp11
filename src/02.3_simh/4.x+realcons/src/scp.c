@@ -8518,6 +8518,37 @@ static void *read_line_thread_start(void *args)
 // read_line_p(): original function, interface to existing code.
 char *read_line_p(const char *prompt, char *cptr, int32 size, FILE *stream)
 {
+    const char *panel_only = getenv("PIDP_REALCONS_PANEL_ONLY");
+    if (panel_only && strcmp(panel_only, "1") == 0 && (!prompt || stream != stdin))
+        return read_line_p_body(prompt, cptr, size, stream);
+    if (prompt && stream == stdin && panel_only && strcmp(panel_only, "1") == 0) {
+        if (!cpu_realcons->connected || size <= 0) {
+            fprintf(stderr, "panel-only console requires a connected panel\n");
+            return NULL;
+        }
+        printf("PANEL_CONSOLE_READY cpu=halted\n%s", prompt);
+        fflush(stdout);
+        while (!stop_cpu && cpu_realcons->connected) {
+            char *command;
+            size_t length;
+            realcons_service(cpu_realcons, 0);
+            command = realcons_simh_get_cmd(cpu_realcons);
+            if (command && *command) {
+                length = strcspn(command, "\r\n");
+                if (length >= (size_t)size) {
+                    fprintf(stderr, "panel command exceeds console buffer\n");
+                    return NULL;
+                }
+                memcpy(cptr, command, length);
+                cptr[length] = '\0';
+                printf("%s\n", cptr);
+                fflush(stdout);
+                return cptr;
+            }
+            sim_os_ms_sleep(1);
+        }
+        return NULL;
+    }
 	if (!cpu_realcons->connected) {
         // no realcons - direct input, as in unpatched SimH
 		return read_line_p_body(prompt, cptr, size, stream) ;

@@ -39,6 +39,8 @@ stdenv.mkDerivation {
     fileset = lib.fileset.unions [
       (server + "/gpio_v2.c")
       (server + "/gpio_v2.h")
+      (server + "/panel_actions.h")
+      (server + "/panel_actions_test.c")
       (server + "/gpio_v2_test.c")
       (server + "/gpio_scan.c")
       (server + "/gpio_scan.h")
@@ -70,6 +72,9 @@ stdenv.mkDerivation {
       gpio_v2.c gpio_v2_test.c -o gpio-v2-test
 
     $CC "''${common_flags[@]}" "''${sanitizer_flags[@]}" \
+      panel_actions_test.c -o panel-actions-test
+
+    $CC "''${common_flags[@]}" "''${sanitizer_flags[@]}" \
       -c gpio_v2.c -o gpio-v2-waveform.o
     $CC "''${common_flags[@]}" "''${sanitizer_flags[@]}" \
       -c gpio_scan.c -o gpio-scan-waveform.o
@@ -93,6 +98,9 @@ stdenv.mkDerivation {
       ./gpio-v2-test
     ASAN_OPTIONS=detect_leaks=1 \
       UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+      ./panel-actions-test
+    ASAN_OPTIONS=detect_leaks=1 \
+      UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
       ./gpio-waveform-test
     runHook postCheck
   '';
@@ -100,6 +108,7 @@ stdenv.mkDerivation {
   installPhase = ''
     runHook preInstall
     install -Dm755 gpio-v2-test "$out/bin/gpio-v2-test"
+    install -Dm755 panel-actions-test "$out/bin/panel-actions-test"
     install -Dm755 gpio-waveform-test "$out/bin/gpio-waveform-test"
     runHook postInstall
   '';
