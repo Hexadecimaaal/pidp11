@@ -235,7 +235,8 @@ int pidp_gpio_scan_inputs(struct pidp_gpio_v2 *backend,
 
     if (pidp_gpio_v2_select_switch(backend, row) < 0)
       return scan_failure(backend, errno);
-    if (delay_for(context, delay, 100000L) < 0)
+    /* full rows on VisionFive 2 still misread at 1ms; allow 5ms to settle. */
+    if (delay_for(context, delay, 5000000L) < 0)
       return scan_failure(backend, errno);
     if (pidp_gpio_v2_read_switches(backend, &physical_bits) < 0)
       return scan_failure(backend, errno);

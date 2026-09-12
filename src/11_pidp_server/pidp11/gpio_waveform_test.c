@@ -710,7 +710,7 @@ static int input_scan_case(void)
   for (i = 0; i < trace.interval_count; ++i) {
     const struct pidp_fixture_interval *interval = &trace.intervals[i];
     const struct pidp_fixture_snapshot *state = &interval->state;
-    if (interval->duration_ns != 100000u
+    if (interval->duration_ns != 5000000u
         || state->led_output != ((1u << PIDP_GPIO_V2_LED_ROWS) - 1u)
         || state->led_high != 0 || state->col_output != 0
         || state->switch_output != (1u << (i % PIDP_GPIO_V2_SWITCH_ROWS))
