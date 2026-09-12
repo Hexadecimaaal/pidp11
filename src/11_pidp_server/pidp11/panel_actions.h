@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+#define PANEL_INPUT_LAMPTEST UINT8_C(0x01)
 #define PANEL_ACTION_LOAD_ADRS UINT8_C(0x02)
 #define PANEL_ACTION_EXAM UINT8_C(0x04)
 #define PANEL_ACTION_DEPOSIT UINT8_C(0x08)
@@ -24,11 +25,12 @@ struct panel_actions {
   int initialized;
 };
 
-/* row2 lower eight bits are physical active-low inputs, not rotary positions. */
+/* actions are active-low; the normally closed lamp-test button reads high held. */
 static inline void panel_actions_update(struct panel_actions *state,
     uint32_t row2, uint64_t now_ns)
 {
-  uint8_t pressed = (uint8_t)~row2 & PANEL_ACTION_MASK;
+  uint8_t pressed = ((uint8_t)~row2 & PANEL_ACTION_MASK)
+      | ((uint8_t)row2 & PANEL_INPUT_LAMPTEST);
   unsigned int i;
 
   if (!state->initialized) {
@@ -64,6 +66,13 @@ static inline uint8_t panel_actions_value(const struct panel_actions *state,
   return front_panel
       ? state->stable & (uint8_t)~state->startup_blocked & PANEL_ACTION_MASK
       : 0;
+}
+
+/* lamp test is a local display level, never a simulator action. */
+static inline int panel_actions_lamptest(const struct panel_actions *state,
+    int physical_inputs)
+{
+  return physical_inputs && (state->stable & PANEL_INPUT_LAMPTEST) != 0;
 }
 
 #endif

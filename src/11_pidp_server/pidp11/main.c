@@ -213,6 +213,9 @@ static int demo_service_inputs(void)
 {
     unsigned int i;
     uint8_t actions = 0;
+    uint64_t now_ns;
+    int previous_lamptest = panel_actions_lamptest(&demo_actions,
+        opt_demo_inputs_physical);
     uint32_t previous_sr = demo_sr_stable;
     int changed = !demo_previous_inputs_valid;
 
@@ -221,16 +224,14 @@ static int demo_service_inputs(void)
     if (pidp_gpio_linux_demo_read_inputs() < 0)
         return -1;
     demo_update_sr_debounce();
-    if (opt_demo_front_panel) {
-        uint64_t now_ns;
-
-        if (demo_monotonic_now(&now_ns) < 0)
-            return -1;
-        panel_actions_update(&demo_actions, gpio_switchstatus[2], now_ns);
-        actions = panel_actions_value(&demo_actions, 1);
-        if (demo_previous_inputs_valid && demo_previous_actions != actions)
-            changed = 1;
-    }
+    if (demo_monotonic_now(&now_ns) < 0)
+        return -1;
+    panel_actions_update(&demo_actions, gpio_switchstatus[2], now_ns);
+    actions = panel_actions_value(&demo_actions, opt_demo_front_panel);
+    if (demo_previous_inputs_valid && (demo_previous_actions != actions
+        || previous_lamptest != panel_actions_lamptest(&demo_actions,
+            opt_demo_inputs_physical)))
+        changed = 1;
     if (demo_sr_stable != previous_sr)
         changed = 1;
     for (i = 0; i < PIDP_GPIO_V2_SWITCH_ROWS; ++i) {
@@ -249,11 +250,12 @@ static int demo_service_inputs(void)
         printf("IDLED_DEMO_INPUT sr=%06" PRIx32
             " raw0=%03" PRIx32 " raw1=%03" PRIx32
             " row2=%03" PRIx32 " addr=%d data=%d"
-            " actions=%02" PRIx8 " front_panel=%d\n",
+            " actions=%02" PRIx8 " front_panel=%d lamptest=%d\n",
             demo_sr_stable, demo_previous_switches[0] & UINT32_C(0xfff),
             demo_previous_switches[1] & UINT32_C(0x3ff),
             demo_previous_switches[2] & UINT32_C(0xfff),
-            knobValue[0], knobValue[1], actions, opt_demo_front_panel);
+            knobValue[0], knobValue[1], actions, opt_demo_front_panel,
+            panel_actions_lamptest(&demo_actions, opt_demo_inputs_physical));
         fflush(stdout);
     }
     demo_previous_inputs_valid = 1;
@@ -303,6 +305,7 @@ static void on_blinkenlight_api_panel_get_controlvalues(blinkenlight_panel_t *p)
         switch_HALT->value = (actions & PANEL_ACTION_HALT) != 0;
         switch_S_BUS_CYCLE->value = (actions & PANEL_ACTION_S_BUS_CYCLE) != 0;
         switch_START->value = (actions & PANEL_ACTION_START) != 0;
+        /* physical lamp test overrides only the local display, not the CPU. */
         switch_LAMPTEST->value = 0;
         switch_PANEL_LOCK->value = 0;
         switch_POWER->value = 1;
@@ -528,7 +531,8 @@ static int demo_service_frame(void)
 
     if (gpiopattern_blinkenlight_panel == NULL)
         return 0;
-    gpiopattern_demo_snapshot(gpiopattern_blinkenlight_panel, rows);
+    gpiopattern_demo_snapshot(gpiopattern_blinkenlight_panel, rows,
+        panel_actions_lamptest(&demo_actions, opt_demo_inputs_physical));
     if ((opt_demo_rows ? pidp_gpio_linux_demo_row_frame(rows)
                        : pidp_gpio_linux_demo_frame(rows)) < 0)
         return -1;
@@ -596,12 +600,13 @@ void blinkenlight_api_server(void)
             opt_demo_front_panel);
 
         printf("IDLED_DEMO_READY switch_free=%d sr=%06llo halt=%d"
-            " lamptest=0 power=1 addr_select=%d data_select=%d"
+            " lamptest=%d power=1 addr_select=%d data_select=%d"
             " scan_mode=%s input_mode=%s front_panel=%d actions=%02" PRIx8 "\n",
             opt_demo_inputs_physical ? 0 : 1,
             (unsigned long long)(opt_demo_inputs_physical
                 ? demo_sr_stable : PIDP_GPIO_DEMO_SR),
             (actions & PANEL_ACTION_HALT) != 0,
+            panel_actions_lamptest(&demo_actions, opt_demo_inputs_physical),
             knobAddrMap[knobValue[0]], knobDataMap[knobValue[1]],
             opt_demo_rows ? "rows" : "single",
             opt_demo_inputs_physical ? "physical" : "fixed",
@@ -703,7 +708,7 @@ static void help(void)
     fprintf(stderr, "  -t          test mode\n");
     fprintf(stderr, "  -D          switch-free demo mode (gpio-v2 only)\n");
     fprintf(stderr, "  -R          opt into row-at-a-time demo scanning (requires -D)\n");
-    fprintf(stderr, "  -S          opt into physical SR and rotary inputs (requires -D)\n");
+    fprintf(stderr, "  -S          opt into physical SR, rotary and local lamp-test inputs (requires -D)\n");
     fprintf(stderr, "  -F          opt into physical console controls (requires -D and -S)\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "  -L          permanently engage PANEL LOCK\n");

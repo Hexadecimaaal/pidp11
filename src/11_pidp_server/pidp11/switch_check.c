@@ -292,7 +292,8 @@ static int report_switches(const char *event, int64_t elapsed, const uint32_t ro
       " SR=0x%06" PRIx32 "(0%08" PRIo32 ")", event,
       (double)elapsed / 1e9, rows[0], rows[1], rows[2], sr, sr);
   for (bit = 0; bit < 8; ++bit)
-    printf(" %s=%u", controls[bit], (unsigned int)((~rows[2] >> bit) & 1u));
+    printf(" %s=%u", controls[bit],
+        (unsigned int)(((bit == 0 ? rows[2] : ~rows[2]) >> bit) & 1u));
   printf(" POWER_RAW=%u ROW1_BIT11_RAW=%u ADDR_AB_RAW=%u%u DATA_AB_RAW=%u%u\n",
       (unsigned int)((rows[1] >> 10) & 1u), (unsigned int)((rows[1] >> 11) & 1u),
       (unsigned int)((rows[2] >> 8) & 1u), (unsigned int)((rows[2] >> 9) & 1u),
@@ -306,7 +307,7 @@ static void usage(FILE *stream)
       "  default: /dev/gpiochip0, 300 seconds, 100us settling, 12-column batch; INT/TERM/HUP stop safely\n"
       "  --inspect: read-only chip identity and all 21 line owners; no requests\n"
       "  raw rows: 12-bit physical levels (1=high); toggles debounce for 20ms\n"
-      "  SR/control values are active-low; rotary AB contacts are unfiltered\n"
+      "  SR/actions are active-low; LAMPTEST is active-high; rotary AB is unfiltered\n"
       "  row0 bits0..11=SR0..11; row1 bits0..9=SR12..21, bit10=power raw\n"
       "  row2 bits0..7=LAMPTEST,LOAD_ADRS,EXAM,DEPOSIT,CONT,HALT,S_BUS_CYCLE,START\n"
       "  row2 bits8,9=ADDR A,B; bits10,11=DATA A,B; no rotary position inference\n");

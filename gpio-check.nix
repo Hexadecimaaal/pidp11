@@ -50,8 +50,20 @@ stdenv.mkDerivation {
       (server + "/gpio_waveform_test.c")
       (server + "/gpio_fixture.h")
       (server + "/gpiopattern.h")
+      (server + "/gpiopattern.c")
+      (server + "/main.c")
+      (server + "/main.h")
+      (server + "/gpio.h")
+      (server + "/gpio_linux.h")
+      (source + "/src/00_common/bitcalc.c")
+      (source + "/src/00_common/bitcalc.h")
+      (source + "/src/07.1_blinkenlight_server/print.h")
+      (source + "/src/07.0_blinkenlight_api/blinkenlight_api_server_procs.h")
+      (source + "/src/07.0_blinkenlight_api/rpcgen_linux/rpc_blinkenlight_api.h")
+      (source + "/src/07.0_blinkenlight_api/blinkenlight_panels.c")
       (source + "/src/07.0_blinkenlight_api/blinkenlight_panels.h")
       (source + "/src/07.0_blinkenlight_api/historybuffer.h")
+      (source + "/src/07.0_blinkenlight_api/historybuffer.c")
     ];
   };
   strictDeps = true;
@@ -70,9 +82,23 @@ stdenv.mkDerivation {
 
     $CC "''${common_flags[@]}" "''${sanitizer_flags[@]}" \
       gpio_v2.c gpio_v2_test.c -o gpio-v2-test
-
-    $CC "''${common_flags[@]}" "''${sanitizer_flags[@]}" \
-      panel_actions_test.c -o panel-actions-test
+    panel_fixture_flags=("''${common_flags[@]}" "''${sanitizer_flags[@]}"
+      "''${fixture_warning_flags[@]}" -DPIDP_GPIO_V2
+      -ffunction-sections -fdata-sections
+      -I../../07.0_blinkenlight_api/rpcgen_linux
+      -I../../07.1_blinkenlight_server)
+    $CC "''${panel_fixture_flags[@]}" -Wno-error=format-overflow \
+      -c panel_actions_test.c gpiopattern.c \
+      ../../07.0_blinkenlight_api/blinkenlight_panels.c
+    # retain upstream helper warnings without weakening the new fixture checks.
+    $CC "''${panel_fixture_flags[@]}" -Wno-error=unused-function \
+      -Wno-error=unused-but-set-variable \
+      -c ../../07.0_blinkenlight_api/historybuffer.c
+    $CC "''${panel_fixture_flags[@]}" -Wno-error=comment \
+      -Wno-error=implicit-fallthrough -c ../../00_common/bitcalc.c
+    $CC "''${sanitizer_flags[@]}" -Wl,--gc-sections \
+      panel_actions_test.o gpiopattern.o blinkenlight_panels.o \
+      historybuffer.o bitcalc.o -o panel-actions-test
 
     $CC "''${common_flags[@]}" "''${sanitizer_flags[@]}" \
       -c gpio_v2.c -o gpio-v2-waveform.o

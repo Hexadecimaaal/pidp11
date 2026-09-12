@@ -473,10 +473,11 @@ mask = 0 ;
     }
 }
 
-/* snapshots reuse the real panel wiring, without the prototype's inverted
- * physical lamp-test input or the normal incandescent brightness averaging.
+/* snapshots reuse the real panel wiring and local lamp-test mapping without
+ * the normal incandescent brightness averaging or changing API output values.
  */
-void gpiopattern_demo_snapshot(blinkenlight_panel_t *panel, uint32_t rows[8])
+void gpiopattern_demo_snapshot(blinkenlight_panel_t *panel, uint32_t rows[8],
+    int local_lamptest)
 {
   unsigned int i;
 
@@ -486,7 +487,7 @@ void gpiopattern_demo_snapshot(blinkenlight_panel_t *panel, uint32_t rows[8])
     blinkenlight_control_t *control = &panel->controls[i];
 
     if (!control->is_input)
-      value2gpio_ledstatus_value(panel, control, control->value, rows, 0);
+      value2gpio_ledstatus_value(panel, control, control->value, rows, local_lamptest);
   }
 }
 
